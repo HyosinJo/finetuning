@@ -13,7 +13,7 @@ import subprocess
 from datetime import datetime
 
 
-traj_path =  "/Users/ai/llm_proj/finetune_DeepSeek-R1-Distill-Qwen-1.5B_GRPO_LoRA_KMMLU/checkpoint-150/trajectories.json"
+traj_path =  "/Users/ai/llm_proj/finetune_MobileLLM-600M_GRPO_LoRA_KMMLU/checkpoint-180/trajectories.json"
 
 
 

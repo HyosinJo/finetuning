@@ -1,6 +1,23 @@
 import os
+import sys
+
+#
+#GRPO 데이터셋으로 변경 KMMLU
+#파인튜닝 데이터셋 선정 리워드모델선정
+
+# 
+# 학습 에포크,스탭나오게
+# 벤치마크 나오게
+# 모델 질문 응답 나오게
+
+# 로컬 TRL 경로를 Python path에 추가
+TRL_PATH = os.path.join(os.path.dirname(__file__), 'trl_finetune')
+if os.path.exists(TRL_PATH):
+    sys.path.insert(0, TRL_PATH)
+    print(f"✅ 로컬 TRL 사용: {TRL_PATH}")
+
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaTokenizer
 from datasets import load_dataset
 import numpy as np
 from datetime import datetime
@@ -14,21 +31,27 @@ load_dotenv()
 # W&B 비활성화
 os.environ["WANDB_DISABLED"] = "true"
 
-# Hugging Face 자동 로그인 
-from huggingface_hub import login
-try:
-    login(token=os.getenv('HF_TOKEN'))  
-    print("✅ Hugging Face 로그인 성공")
-except Exception as e:
-    print(f"⚠️ Hugging Face 로그인 실패: {e}")
-    print("환경변수 HF_TOKEN을 설정하거나 huggingface-cli login을 실행하세요.")
+# Hugging Face 토큰 설정
+HF_TOKEN = os.getenv('HF_TOKEN')
+if HF_TOKEN:
+    from huggingface_hub import login
+    try:
+        login(token=HF_TOKEN)  
+        print("✅ Hugging Face 로그인 성공")
+    except Exception as e:
+        print(f"⚠️ Hugging Face 로그인 실패: {e}")
+        print("환경변수 HF_TOKEN을 설정하거나 huggingface-cli login을 실행하세요.")
+else:
+    print("⚠️ HF_TOKEN이 설정되지 않았습니다. .env 파일에 HF_TOKEN을 추가하세요.")
+    HF_TOKEN = None
 
 # 설정 변수
 
 MODEL_ID = 'google/gemma-3-270m'
 MODEL_ID = "Qwen/Qwen1.5-MoE-A2.7B-Chat"
-MODEL_ID = "facebook/MobileLLM-600M"
 MODEL_ID = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+
+MODEL_ID = "facebook/MobileLLM-600M"
 
 
 FINE_TUNE_FRAMEWORK = "trl"  # "trl" 또는 "verl (DAPO 인경우)" 선택
@@ -451,7 +474,8 @@ def train_sft():
         quantization_config=bnb_config if USE_QLORA else None,
         torch_dtype=torch.float32 if not USE_QLORA else None,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        token=HF_TOKEN
     )
     
     # QLoRA 준비
@@ -471,7 +495,19 @@ def train_sft():
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
     
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 LlamaTokenizer 직접 사용
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    else:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        except Exception as e:
+            if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+            else:
+                raise e
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -538,7 +574,8 @@ def train_dpo():
         quantization_config=bnb_config if USE_QLORA else None,
         torch_dtype=torch.float32 if not USE_QLORA else None,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        token=HF_TOKEN
     )
     
     # 참조 모델은 LoRA/QLoRA 사용 시 None (자동 처리됨)
@@ -548,7 +585,8 @@ def train_dpo():
             MODEL_ID,
             torch_dtype=torch.float32,
             device_map="auto",
-            trust_remote_code=True
+            trust_remote_code=True,
+            token=HF_TOKEN
         )
     
     # QLoRA 준비
@@ -568,7 +606,19 @@ def train_dpo():
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
     
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 LlamaTokenizer 직접 사용
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    else:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        except Exception as e:
+            if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+            else:
+                raise e
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -638,7 +688,8 @@ def train_orpo():
         quantization_config=bnb_config if USE_QLORA else None,
         torch_dtype=torch.float32 if not USE_QLORA else None,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        token=HF_TOKEN
     )
     
     # QLoRA 준비
@@ -658,7 +709,19 @@ def train_orpo():
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
     
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 LlamaTokenizer 직접 사용
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    else:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        except Exception as e:
+            if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+            else:
+                raise e
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -705,7 +768,20 @@ def train_grpo():
     print("🚀 GRPO 파인튜닝 시작 (TRL 내장)...")
     
     # 토크나이저 로드
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 LlamaTokenizer 직접 사용
+        print("🦙 MobileLLM 모델 감지 - LlamaTokenizer 사용")
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    else:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        except Exception as e:
+            if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+            else:
+                raise e
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -959,9 +1035,61 @@ def train_grpo():
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(json_trajectories, f, indent=2, ensure_ascii=False)
     
+    # 모델 로드 (MobileLLM 등 커스텀 모델 지원)
+    print(f"🤖 모델 로드 중... ({'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else '풀 파인튜닝'})")
+    
+    from transformers import BitsAndBytesConfig
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    
+    # QLoRA 설정
+    bnb_config = None
+    if USE_QLORA:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        )
+    
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 trust_remote_code 필요
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            trust_remote_code=True,
+            quantization_config=bnb_config if USE_QLORA else None,
+            torch_dtype=torch.float32 if not USE_QLORA else None,
+            device_map="auto"
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            quantization_config=bnb_config if USE_QLORA else None,
+            torch_dtype=torch.float32 if not USE_QLORA else None,
+            device_map="auto"
+        )
+    
+    # QLoRA 준비
+    if USE_QLORA:
+        model = prepare_model_for_kbit_training(model)
+    
+    # LoRA 설정
+    if USE_LORA or USE_QLORA:
+        lora_config = LoraConfig(
+            r=LORA_R,
+            lora_alpha=LORA_ALPHA,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            lora_dropout=LORA_DROPOUT,
+            bias="none",
+            task_type="CAUSAL_LM"
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+    
     # GRPO 트레이너
     trainer = GRPOTrainer(
-        model=MODEL_ID,
+        model=model,  # 모델 객체 직접 전달
         args=grpo_config,
         train_dataset=dataset,
         reward_funcs=reward_func,  # 단일 리워드 함수도 reward_funcs 파라미터 사용
@@ -1053,7 +1181,19 @@ def train_dapo():
             return
         
         # 모델과 토크나이저 로드
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+        if "MobileLLM" in MODEL_ID:
+            # MobileLLM은 LlamaTokenizer 직접 사용
+            tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        else:
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+            except Exception as e:
+                if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                    print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+                else:
+                    raise e
+        
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
@@ -1079,8 +1219,6 @@ def train_with_trl():
     # METHOD에 따라 적절한 학습 함수 호출
     if METHOD.upper() == "SFT":
         train_sft()
-    elif METHOD.upper() == "PPO":
-        train_ppo()
     elif METHOD.upper() == "DPO":
         train_dpo()
     elif METHOD.upper() == "ORPO":
