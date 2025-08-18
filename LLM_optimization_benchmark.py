@@ -30,8 +30,9 @@ except:
     pass
 
 # 비교할 모델들 설정
-base_model_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # 기존 모델
-fine_model_id = "/Users/ai/llm_proj/finetune_DeepSeek-R1-Distill-Qwen-1.5B_SFT_LoRA_KOREAN_INSTRUCTION/checkpoint-100"  # 파인튜닝 모델
+#'trillionlabs/Tri-7B'
+base_model_id = 'trillionlabs/Tri-7B' #"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # 기존 모델
+fine_model_id = "/Users/ai/llm_proj/finetune_MobileLLM-600M_GRPO_LoRA_KMMLU/checkpoint-180"  # 파인튜닝 모델
 
 # 개별 실행 시 사용할 모델 (기본값)
 model_id = base_model_id
@@ -742,9 +743,22 @@ class LLMOptimizationBenchmark:
             print(f"\n[{model_label}] 모델 로드 중...")
             start_time = time.time()
             
-            tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
+            # Load tokenizer with proper handling for all models
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(self.model_id, trust_remote_code=True)
+                # Handle cases where tokenizer returns bool or other unexpected types
+                if not hasattr(tokenizer, 'encode') or isinstance(tokenizer, bool):
+                    print(f"특수 tokenizer 감지, LlamaTokenizer로 대체 시도...")
+                    from transformers import LlamaTokenizer
+                    tokenizer = LlamaTokenizer.from_pretrained(self.model_id)
+            except Exception as e:
+                print(f"Tokenizer 로드 실패: {e}, LlamaTokenizer 사용")
+                from transformers import LlamaTokenizer
+                tokenizer = LlamaTokenizer.from_pretrained(self.model_id)
+            
+            # Set pad token if needed
+            if hasattr(tokenizer, 'pad_token') and tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token if hasattr(tokenizer, 'eos_token') else tokenizer.eos_token_id
             
             # MXFP4를 bfloat16으로 fallback하도록 설정
             model = AutoModelForCausalLM.from_pretrained(
@@ -1081,9 +1095,10 @@ def run_comparison():
                         result_key = model_type
                     elif model_type == 'lightweight':
                         # 경량화 모델은 적용된 최적화를 동적으로 찾음
+                        # 마지막으로 적용된 최적화 결과를 사용
                         for key in methods.keys():
-                            if key.startswith('lightweight:'):
-                                result_key = key
+                            if key.startswith('lightweight'):
+                                result_key = key  # 계속 업데이트하여 마지막 결과 사용
                                 break
                     
                     if result_key:

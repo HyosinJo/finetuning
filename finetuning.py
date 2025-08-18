@@ -1,11 +1,14 @@
 import os
 import sys
 
-#
+#리워드모델(답변품질) , 하이브리드 방식
 #GRPO 데이터셋으로 변경 KMMLU
 #파인튜닝 데이터셋 선정 리워드모델선정
 
-# 
+# 리워드모델 변경
+# 테스트 
+
+# lora 어댑터 moe에서 위치 확인
 # 학습 에포크,스탭나오게
 # 벤치마크 나오게
 # 모델 질문 응답 나오게
@@ -50,8 +53,8 @@ else:
 MODEL_ID = 'google/gemma-3-270m'
 MODEL_ID = "Qwen/Qwen1.5-MoE-A2.7B-Chat"
 MODEL_ID = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-
 MODEL_ID = "facebook/MobileLLM-600M"
+MODEL_ID = "trillionlabs/Tri-7B"
 
 
 FINE_TUNE_FRAMEWORK = "trl"  # "trl" 또는 "verl (DAPO 인경우)" 선택
@@ -103,9 +106,9 @@ num_batch_iteration=10
 SAVE_STEPS = 30  # 몇 스텝마다 저장할지
 MAX_STEPS = 5000  # 총 학습 스텝
 DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
-LEARNING_RATE = 5e-5  # LoRA는 더 높은 학습률 사용
+LEARNING_RATE = 5e-5  
  # GRPO의 num_generations = 10 로 나누어떨어지도록 수정
-BATCH_SIZE = 10 # VERL DAPO는 8의 배수 필요
+BATCH_SIZE = 10 
 OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
 
 
@@ -280,7 +283,7 @@ def prepare_kmmlu_for_rlhf():
             prompt += f"B) {choices[1]}\n"
             prompt += f"C) {choices[2]}\n"
             prompt += f"D) {choices[3]}\n"
-            prompt += "답을 고르세요:"
+            prompt += "정답을 고르세요:"
             prompts.append(prompt)
         return {"prompt": prompts, "answer": examples['answer']}
     
@@ -785,6 +788,14 @@ def train_grpo():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # token_type_ids 제거 설정
+    # token_type_ids는 BERT 계열 모델에서 문장 구분을 위해 사용되는 파라미터
+    # GPT/Llama 계열 모델(Qwen, DeepSeek 등)에서는 사용하지 않음
+    # 하지만 일부 토크나이저가 이를 자동으로 생성해서 generate() 함수에서 오류 발생
+    # 따라서 model_input_names에서 제거하여 토크나이저가 이를 생성하지 않도록 함
+    if hasattr(tokenizer, 'model_input_names') and 'token_type_ids' in tokenizer.model_input_names:
+        tokenizer.model_input_names.remove('token_type_ids')
+    
     # 데이터셋 준비
     if DATASET_TYPE == "KMMLU":
         dataset = prepare_kmmlu_for_rlhf()
@@ -796,7 +807,12 @@ def train_grpo():
     try:
         from transformers import AutoModelForSequenceClassification
         # 다국어 지원 보상 모델 사용
-        reward_model_name = "OpenAssistant/reward-model-deberta-v3-large-v2"
+        #reward_model_name = "OpenAssistant/reward-model-deberta-v3-large-v2"
+        reward_model_name = "gaotang/RM-R1-DeepSeek-Distilled-Qwen-7B" # rm r1 추론 보상 모델
+        reward_model_name = "heegyu/ko-reward-model-1.3b-v0.1" # 한글 리워드 모델
+        reward_model_name = "heegyu/ko-reward-model-safety-1.3b-v0.2" # 한글리워드 2 
+        reward_model_name = "heegyu/ko-reward-model-helpful-1.3b-v0.2" # 한글리워드 3 유용한 답변에 점수
+
         # MPS에서는 CPU로 로드
         if torch.backends.mps.is_available():
             reward_model = AutoModelForSequenceClassification.from_pretrained(
@@ -845,14 +861,20 @@ def train_grpo():
         elif not isinstance(prompts, list):
             prompts = [prompts] * len(completions)
         
+        # 실시간 로그 출력 헤더 (첫 번째 배치만)
+        if len(completions) > 0:
+            print("\n" + "="*100)
+            print("🔍 보상 계산 시작 - 배치 크기:", len(completions))
+            print("="*100)
+        
         for i, (completion, answer_idx) in enumerate(zip(completions, answers)):
             completion_text = completion.strip()
-            
             # 보상 모델이 있는 경우
-            if 'reward_model' in locals() and reward_model is not None:
+            if reward_model is not None:
+                print('reward model 보상 평가 시작')
                 try:
-                    # 전체 대화 컨텍스트 구성
-                    full_text = f"{prompts[i]}\n{completion_text}"
+                    # 보상모델이 평가할 품질 데이터 (질문지,모델의 응답)
+                    full_text = f"질문 : {prompts[i]}\n 모델 응답 : {completion_text}"
                     
                     # 보상 모델로 품질 평가
                     inputs = reward_tokenizer(
@@ -868,7 +890,17 @@ def train_grpo():
                     
                     with torch.no_grad():
                         outputs = reward_model(**inputs)
-                        quality_score = outputs.logits[0].item()  # 품질 점수
+                        # logits 차원 처리
+                        if hasattr(outputs, 'logits'):
+                            logits = outputs.logits
+                            if logits.dim() == 2:  # [batch_size, num_classes]
+                                quality_score = logits[0, 0].item()  # 첫 번째 클래스 점수
+                            elif logits.dim() == 1:  # [num_classes]
+                                quality_score = logits[0].item()
+                            else:
+                                quality_score = logits.item()  # 스칼라
+                        else:
+                            quality_score = outputs[0].item() if hasattr(outputs[0], 'item') else float(outputs[0])
                     
                     # 정답 여부 확인 (A,B,C,D 추출)
                     import re
@@ -892,12 +924,24 @@ def train_grpo():
                     if extracted_answer == correct_answer:
                         # 정답: 품질 점수 + 보너스
                         reward = quality_score + 1
+                        is_correct = "✅ 정답"
                     elif extracted_answer:
                         # 답은했지만 틀린경우: 품질 점수 - 페널티
                         reward = quality_score - 1
+                        is_correct = f"❌ 오답 (선택: {extracted_answer}, 정답: {correct_answer})"
                     else:
-                        # 형식도 틀리고 답도 틀린경우: 품질 점수만
+                        # 품질도 안좋고 답도 틀린경우: 추가 패널티
                         reward = quality_score - 1.5
+                        is_correct = f"⚠️ 응답 품질 저하 (정답: {correct_answer})"
+                    
+                    # 실시간 로그 출력
+                    print(f"\n[샘플 {i+1}]")
+                    print(f"📝 문제: {prompts[i][:100]}...")
+                    print(f"💬 응답: {completion_text[:200]}...")
+                    print(f"📊 보상모델의 점수: {quality_score:.4f}")
+                    print(f"🎯 정답 체크: {is_correct}")
+                    print(f"🏆 최종 보상: {reward:.4f}")
+                    print("-" * 80)
                     
                 except Exception as e:
                     print(f"보상 계산 오류: {e}")
@@ -914,12 +958,39 @@ def train_grpo():
                     # 응답과 각 선택지의 유사도 계산
                     response_emb = embedder.encode([completion_text])
                     
-                    # 간단히 정답 여부만 확인 (실제로는 선택지 텍스트와 비교해야 함)
+                    # 엄격한 답안 추출
                     import re
-                    if re.search(rf'\b{correct_letter}\b', completion_text.upper()):
+                    extracted_answer = None
+                    patterns = [
+                        r'^([A-D])[).\s]?',
+                        r'(?:답|정답|선택)(?:은|는)?\s*[:\s]?\s*([A-D])',
+                        r'([A-D])\s*(?:번|입니다|이다|임)',
+                    ]
+                    
+                    for pattern in patterns:
+                        match = re.search(pattern, completion_text.upper())
+                        if match:
+                            extracted_answer = match.group(1)
+                            break
+                    
+                    # 정답 체크
+                    if extracted_answer == correct_letter:
                         reward = 1.0
-                    else:
+                        is_correct = f"✅ 정답 (임베딩 기반)"
+                    elif extracted_answer:
                         reward = -0.5
+                        is_correct = f"❌ 오답 (임베딩 기반, 선택: {extracted_answer}, 정답: {correct_letter})"
+                    else:
+                        reward = -1.0
+                        is_correct = f"⚠️ 형식 오류 (임베딩 기반, 정답: {correct_letter})"
+                    
+                    # 실시간 로그 출력
+                    print(f"\n[샘플 {i+1}]")
+                    print(f"📝 문제: {prompts[i][:100]}...")
+                    print(f"💬 응답: {completion_text[:200]}...")
+                    print(f"🎯 정답 체크: {is_correct}")
+                    print(f"🏆 최종 보상: {reward:.4f}")
+                    print("-" * 80)
                         
                 except Exception as e:
                     print(f"임베딩 계산 오류: {e}")
@@ -929,14 +1000,115 @@ def train_grpo():
                 # 기본 규칙 기반 (폴백의 폴백)
                 import re
                 # KMMLU는 1-indexed (1,2,3,4)이므로 0-indexed로 변환
-                if re.search(rf'\b{["A", "B", "C", "D"][answer_idx - 1]}\b', completion_text.upper()):
+                correct_answer = ['A', 'B', 'C', 'D'][answer_idx - 1]
+                
+                # 엄격한 답안 추출 패턴
+                extracted_answer = None
+                patterns = [
+                    r'^([A-D])[).\s]?',  # 문장 시작 부분의 A), A., A 등
+                    r'(?:답|정답|선택)(?:은|는)?\s*[:\s]?\s*([A-D])',  # 답은 A, 정답: B 등
+                    r'([A-D])\s*(?:번|입니다|이다|임)',  # A번, A입니다 등
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, completion_text.upper())
+                    if match:
+                        extracted_answer = match.group(1)
+                        break
+                
+                # 정답 체크
+                if extracted_answer == correct_answer:
                     reward = 1.0
-                else:
+                    is_correct = f"✅ 정답 (규칙 기반)"
+                elif extracted_answer:
                     reward = -1.0
+                    is_correct = f"❌ 오답 (규칙 기반, 선택: {extracted_answer}, 정답: {correct_answer})"
+                else:
+                    reward = -1.5
+                    is_correct = f"⚠️ 형식 오류 (규칙 기반, 정답: {correct_answer})"
+                
+                # 실시간 로그 출력
+                print(f"\n[샘플 {i+1}]")
+                print(f"📝 문제: {prompts[i][:100]}...")
+                print(f"💬 응답: {completion_text[:200]}...")
+                print(f"🎯 정답 체크: {is_correct}")
+                print(f"🏆 최종 보상: {reward:.4f}")
+                print("-" * 80)
             
             rewards.append(reward)
         
         return rewards
+    
+    # GPU 감지 및 DeepSpeed 자동 설정
+    deepspeed_config = None
+    if torch.cuda.is_available():
+        print("🚀 GPU 감지됨! DeepSpeed 자동 활성화")
+        
+        # GPU 메모리에 따라 ZeRO stage 자동 선택
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB 단위
+        
+        if gpu_memory < 8:  # 8GB 미만
+            zero_stage = 3  # 최대 메모리 절약
+            offload_optimizer = True
+            offload_param = True
+            print(f"💾 GPU 메모리 {gpu_memory:.1f}GB - ZeRO Stage 3 + CPU 오프로딩 사용")
+        elif gpu_memory < 16:  # 16GB 미만
+            zero_stage = 2
+            offload_optimizer = True
+            offload_param = False
+            print(f"💾 GPU 메모리 {gpu_memory:.1f}GB - ZeRO Stage 2 + 옵티마이저 오프로딩 사용")
+        else:  # 16GB 이상
+            zero_stage = 1
+            offload_optimizer = False
+            offload_param = False
+            print(f"💾 GPU 메모리 {gpu_memory:.1f}GB - ZeRO Stage 1 사용")
+        
+        deepspeed_config = {
+            "train_batch_size": BATCH_SIZE,
+            "gradient_accumulation_steps": 1,
+            "fp16": {
+                "enabled": True,
+                "auto_cast": False,
+                "loss_scale": 0,
+                "initial_scale_power": 16,
+                "loss_scale_window": 1000,
+                "hysteresis": 2,
+                "consecutive_hysteresis": False,
+                "min_loss_scale": 1
+            },
+            "bf16": {
+                "enabled": torch.cuda.is_bf16_supported()
+            },
+            "zero_optimization": {
+                "stage": zero_stage,
+                "offload_optimizer": {
+                    "device": "cpu" if offload_optimizer else "none",
+                    "pin_memory": True
+                } if offload_optimizer else {},
+                "offload_param": {
+                    "device": "cpu" if offload_param else "none",
+                    "pin_memory": True
+                } if offload_param else {},
+                "overlap_comm": True,
+                "contiguous_gradients": True,
+                "sub_group_size": 1e9,
+                "reduce_bucket_size": "auto",
+                "stage3_prefetch_bucket_size": "auto",
+                "stage3_param_persistence_threshold": "auto",
+                "stage3_max_live_parameters": 1e9,
+                "stage3_max_reuse_distance": 1e9,
+                "stage3_gather_16bit_weights_on_model_save": True
+            },
+            "gradient_clipping": 1.0,
+            "steps_per_print": 10,
+            "wall_clock_breakdown": False
+        }
+        
+        # DeepSpeed 설정 파일 저장
+        import json
+        with open("ds_config.json", "w") as f:
+            json.dump(deepspeed_config, f, indent=2)
+        print("✅ DeepSpeed 설정 파일 저장됨: ds_config.json")
     
     # GRPO 설정
     grpo_config = GRPOConfig(
@@ -944,19 +1116,23 @@ def train_grpo():
         per_device_train_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=1,
         num_iterations=num_batch_iteration,  # 각 배치당 반복 횟수
-        epsilon=0.2,  # 클리핑 값
+        epsilon=0.2,  # surr loss 클리핑 값
         save_steps=SAVE_STEPS,
         output_dir=OUTPUT_DIR,
-        max_completion_length=128,  # max_new_tokens 대신 max_completion_length 사용
-        max_prompt_length=512,  # 프롬프트 최대 길이
+        max_completion_length=512,  # max_new_tokens 대신 max_completion_length 사용 (응답 외대)
+        max_prompt_length=1024,  # 프롬프트 최대 길이 (질문 최대)
         num_generations=10,  # 각 프롬프트당 생성할 응답 수
         temperature=1.0,  # 생성 온도
         beta=0.1,  # KL 페널티 계수
-        logging_steps=1,
-        bf16=False,  # macOS에서는 bf16 비활성화
-        fp16=False,  # fp16도 비활성화
+        logging_steps=1, 
+        bf16=torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False,  # GPU가 지원하면 자동 활성화
+        fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),  # bf16 미지원시 fp16 사용
         report_to="tensorboard",  # 텐서보드 로그
-        logging_dir="./logs",     
+        logging_dir="./logs",
+        deepspeed=deepspeed_config,  # DeepSpeed 설정 추가 (GPU 있을 때만)
+        importance_sampling_level="token",  # 중요도 샘플링 수준: "token" 또는 "sequence"
+        scale_rewards=True,  # 보상 정규화 여부 (표준편차로 나누기)
+        use_liger_loss=False,  # Liger 커널 사용 여부 (GPU 최적화, token-level만 지원)
     )
     
     # Trajectory 저장을 위한 콜백 클래스
