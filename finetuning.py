@@ -59,12 +59,12 @@ MODEL_ID = "openai/gpt-oss-20b"
 
 
 FINE_TUNE_FRAMEWORK = "trl"  # "trl" 또는 "verl (DAPO 인경우)" 선택
-METHOD = "GRPO"  # "SFT", "DPO", "GRPO", "PPO", "DAPO", "ORPO" 중 선택
+METHOD = "SFT"  # "SFT", "DPO", "GRPO", "PPO", "DAPO", "ORPO" 중 선택
 
 # 데이터셋 설정
+#DATASET_TYPE = "KMMLU"  
+#KMMLU_SUBJECT = "Economics"
 DATASET_TYPE = 'heegyu/CoT-collection-ko' #COT데이터셋
-DATASET_TYPE = "KMMLU"  
-KMMLU_SUBJECT = "Economics"
 
 # 현재 선택된 데이터셋 (방법에 따라 자동 선택됨)
 if DATASET_TYPE == "KMMLU":
@@ -77,9 +77,9 @@ else:
     elif METHOD == "DPO" or METHOD == "ORPO":
         DATASET_NAME = "maywell/ko_Ultrafeedback_binarized"  # DPO와 ORPO 둘 다 선호/비선호 쌍 필요
     elif METHOD == "DAPO":
-        DATASET_NAME = "markrAI/KoCommercial-Dataset"  # DAPO는 정답이 있는 데이터 필요
+        DATASET_NAME = "markrAI/KoCommercial-Dataset"  
     else:  # PPO, GRPO
-        DATASET_NAME = "kyujinpy/KOR-OpenOrca-Platypus-v3"
+        DATASET_NAME = "kyujinpy/KOR-OpenOrca-Platypus-v3" # 데이터셋에서 인스트럭트만 사용 -> 개선용 알고리즘
 
 
 
@@ -91,17 +91,6 @@ LORA_ALPHA = 32  # LoRA alpha
 LORA_DROPOUT = 0.1  # LoRA dropout
 
 
-
-# STF 학습 설정
-num_train_epochs=100 # 에포크
-SAVE_STEPS = 100  # 몇 스텝마다 저장할지
-MAX_STEPS = 5000  # 총 학습 스텝
-DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
-LEARNING_RATE = 5e-4  # LoRA는 더 높은 학습률 사용
- # GRPO의 GRPO_num_generations = 10 로 나누어떨어지도록 수정
-BATCH_SIZE = 10
-OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
-
 # GRPO 학습 설정
 num_batch_iteration=10
 SAVE_STEPS = 30  # 몇 스텝마다 저장할지
@@ -109,6 +98,17 @@ MAX_STEPS = 5000  # 총 학습 스텝
 DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
 LEARNING_RATE = 5e-4
 GRPO_num_generation = 10 #oi
+BATCH_SIZE = 10
+OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
+
+
+
+# STF 학습 설정
+num_train_epochs=100 # 에포크
+SAVE_STEPS = 30  # 몇 스텝마다 저장할지
+MAX_STEPS = 5000  # 총 학습 스텝
+DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
+LEARNING_RATE = 5e-4  # LoRA는 더 높은 학습률 사용
 BATCH_SIZE = 10
 OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
 
@@ -505,14 +505,39 @@ def train_sft():
         )
     
     # 모델과 토크나이저 로드
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        quantization_config=bnb_config if USE_QLORA else None,
-        torch_dtype=torch.float32 if not USE_QLORA else None,
-        device_map="auto",
-        trust_remote_code=True,
-        token=HF_TOKEN
-    )
+    if MODEL_ID == "openai/gpt-oss-20b":
+        # Config 먼저 로드하여 quantization_config 문제 해결
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            trust_remote_code=True
+        )
+        
+        # quantization_config가 None이면 빈 dict로 설정
+        if hasattr(config, 'quantization_config') and config.quantization_config is None:
+            print("⚠️ quantization_config가 None입니다. 빈 dict로 설정...")
+            config.quantization_config = {}
+        
+        # 수정된 config로 모델 로드
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            trust_remote_code=True,
+            config=config,
+            quantization_config=bnb_config if USE_QLORA else None,
+            torch_dtype=torch.float32 if not USE_QLORA else None,
+            device_map="auto"
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            quantization_config=bnb_config if USE_QLORA else None,
+            torch_dtype=torch.float32 if not USE_QLORA else None,
+            device_map="auto",
+            trust_remote_code=True,
+            token=HF_TOKEN
+        )
     
     # QLoRA 준비
     if USE_QLORA:
