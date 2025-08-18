@@ -346,8 +346,19 @@ def prepare_kmmlu_for_rlhf():
 # 한국어 지시 따르기 데이터 준비 함수들
 def prepare_korean_instruction_for_sft():
     """SFT용 한국어 지시 따르기 데이터 준비"""
-    # markrAI/KoCommercial-Dataset 사용
+    print(f"\n📊 한국어 SFT 데이터 로드 중...")
+    
+    # 전체 데이터셋 크기 확인
+    full_dataset = load_dataset("markrAI/KoCommercial-Dataset", split="train")
+    total_size = len(full_dataset)
+    
+    # 지정된 크기만큼 데이터 로드
     dataset = load_dataset("markrAI/KoCommercial-Dataset", split=f"train[:{DATA_SIZE}]")
+    
+    print(f"📈 markrAI/KoCommercial-Dataset 데이터 통계:")
+    print(f"   - 전체 데이터: {total_size}개")
+    print(f"   - 로드된 데이터: {len(dataset)}개")
+    print(f"   - 사용 비율: {len(dataset)/total_size*100:.1f}%")
     
     def preprocess(examples):
         texts = []
@@ -364,7 +375,17 @@ def prepare_korean_instruction_for_sft():
             texts.append(text)
         return {"text": texts}
     
-    return dataset.map(preprocess, batched=True)
+    processed_dataset = dataset.map(preprocess, batched=True)
+    
+    # 데이터 샘플 출력
+    print("\n📋 SFT 데이터 샘플:")
+    print("="*80)
+    for i in range(min(3, len(processed_dataset))):
+        print(f"\n[샘플 {i+1}]")
+        print(processed_dataset[i]['text'][:500] + "..." if len(processed_dataset[i]['text']) > 500 else processed_dataset[i]['text'])
+    print("="*80)
+    
+    return processed_dataset
 
 def prepare_korean_instruction_for_dpo():
     """DPO용 한국어 지시 따르기 데이터 준비 - 선호/비선호 쌍 생성"""
@@ -526,8 +547,11 @@ def train_sft():
             trust_remote_code=True,
             config=config,
             quantization_config=bnb_config if USE_QLORA else None,
-            torch_dtype=torch.float32 if not USE_QLORA else None,
-            device_map="auto"
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,  # GPU면 bf16, CPU면 fp32
+            device_map="auto",
+            low_cpu_mem_usage=True,  # 메모리 효율적 로딩 (meta tensor 방지)
+            offload_folder="offload",  # GPU 메모리 부족시 일부를 디스크에 저장
+            offload_state_dict=True  # state dict를 디스크에 오프로드
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
