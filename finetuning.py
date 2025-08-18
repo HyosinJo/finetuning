@@ -507,6 +507,15 @@ def prepare_korean_instruction_for_dapo():
 
 
 
+
+
+
+
+
+
+
+
+
 # SFT 방식 파인튜닝 (Supervised Fine-Tuning)
 def train_sft():
     from trl import SFTTrainer, SFTConfig
@@ -625,16 +634,143 @@ def train_sft():
         logging_dir="./logs",     
     )
     
+    # SFT용 콜백 클래스 - 학습 진행 상황 출력
+    from transformers import TrainerCallback
+    import pickle
+    
+    class SFTProgressCallback(TrainerCallback):
+        def __init__(self, tokenizer, dataset):
+            self.tokenizer = tokenizer
+            self.dataset = dataset
+            self.step_count = 0
+            self.trajectories = []  # Trajectory 저장용
+            
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            if logs is not None and state.global_step > 0:
+                # Trajectory 수집 (매 로그마다 - 모든 정보 저장)
+                if state.log_history:
+                    latest_log = state.log_history[-1]
+                    
+                    # 모든 로그 정보를 그대로 저장
+                    trajectory = {
+                        'step': state.global_step,
+                        'epoch': state.epoch,
+                        **latest_log  # 모든 로그 정보를 그대로 포함
+                    }
+                    
+                    # GPU 메모리 정보 추가
+                    if torch.cuda.is_available():
+                        trajectory['gpu_memory_allocated'] = torch.cuda.memory_allocated() / 1024**3
+                        trajectory['gpu_memory_reserved'] = torch.cuda.memory_reserved() / 1024**3
+                    
+                    self.trajectories.append(trajectory)
+                
+                # 10 스텝마다 현재 학습 중인 데이터 샘플 출력
+                if state.global_step % 10 == 0:
+                    self.step_count += 1
+                    current_idx = (state.global_step * args.per_device_train_batch_size) % len(self.dataset)
+                    
+                    print(f"\n{'='*100}")
+                    print(f"🎯 Step: {state.global_step} | Epoch: {state.epoch:.2f}")
+                    print(f"📊 Loss: {logs.get('loss', 'N/A'):.4f} | Learning Rate: {logs.get('learning_rate', 'N/A'):.2e}")
+                    
+                    # GPU 메모리 정보 출력
+                    if torch.cuda.is_available():
+                        gpu_memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+                        gpu_memory_reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+                        print(f"💾 GPU 메모리: {gpu_memory_allocated:.2f}GB / {gpu_memory_reserved:.2f}GB (할당/예약)")
+                    
+                    # 현재 학습 중인 데이터 샘플 출력
+                    if current_idx < len(self.dataset):
+                        sample = self.dataset[current_idx]
+                        sample_text = sample.get('text', '')
+                        
+                        # 지시문과 응답 분리
+                        if "### 지시:" in sample_text and "### 응답:" in sample_text:
+                            parts = sample_text.split("### 응답:")
+                            instruction = parts[0].replace("### 지시:", "").strip()
+                            response = parts[1].strip() if len(parts) > 1 else "N/A"
+                            
+                            print(f"\n📝 현재 학습 데이터 (인덱스: {current_idx}):")
+                            print(f"질문: {instruction[:200]}..." if len(instruction) > 200 else f"질문: {instruction}")
+                            print(f"정답: {response[:200]}..." if len(response) > 200 else f"정답: {response}")
+                        else:
+                            print(f"\n📝 현재 학습 데이터 (인덱스: {current_idx}):")
+                            print(f"{sample_text[:400]}..." if len(sample_text) > 400 else sample_text)
+                    
+                    print("="*100)
+        
+        def on_save(self, args, state, control, **kwargs):
+            # 체크포인트 저장 시 trajectory도 저장
+            save_path = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            traj_path = os.path.join(save_path, "trajectories.pkl")
+            
+            # 디렉토리 생성
+            os.makedirs(save_path, exist_ok=True)
+            
+            # Trajectory 저장
+            with open(traj_path, 'wb') as f:
+                pickle.dump(self.trajectories, f)
+            print(f"💾 SFT Trajectory 저장됨: {traj_path}")
+            
+            # JSON 형식으로도 저장 (읽기 쉽게)
+            import json
+            json_path = os.path.join(save_path, "trajectories.json")
+            # 모든 필드를 JSON으로 저장 (직렬화 가능한 것만)
+            json_trajectories = []
+            for traj in self.trajectories:
+                json_traj = {}
+                for k, v in traj.items():
+                    try:
+                        # JSON 직렬화 테스트
+                        json.dumps(v)
+                        json_traj[k] = v
+                    except:
+                        # 직렬화 불가능한 경우 str 변환
+                        json_traj[k] = str(v) if v is not None else None
+                json_trajectories.append(json_traj)
+            
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(json_trajectories, f, indent=2, ensure_ascii=False)
+    
     # SFT 트레이너
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
         processing_class=tokenizer,
+        callbacks=[SFTProgressCallback(tokenizer, dataset)]  # 콜백 추가
     )
     
     # 학습
     trainer.train()
+    
+    # 최종 trajectory 저장 (SFT 콜백에서 가져오기)
+    for callback in trainer.callback_handler.callbacks:
+        if isinstance(callback, SFTProgressCallback):
+            final_traj_path = os.path.join(OUTPUT_DIR, "final", "trajectories.pkl")
+            os.makedirs(os.path.join(OUTPUT_DIR, "final"), exist_ok=True)
+            with open(final_traj_path, 'wb') as f:
+                pickle.dump(callback.trajectories, f)
+            print(f"💾 최종 SFT Trajectory 저장됨: {final_traj_path}")
+            
+            # JSON 형식으로도 저장
+            json_path = os.path.join(OUTPUT_DIR, "final", "trajectories.json")
+            json_trajectories = []
+            for traj in callback.trajectories:
+                json_traj = {}
+                for k, v in traj.items():
+                    try:
+                        json.dumps(v)
+                        json_traj[k] = v
+                    except:
+                        json_traj[k] = str(v) if v is not None else None
+                json_trajectories.append(json_traj)
+            
+            import json
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(json_trajectories, f, indent=2, ensure_ascii=False)
+            break
     
     # 최종 모델 저장
     trainer.save_model(f"{OUTPUT_DIR}/final")
