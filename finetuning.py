@@ -127,8 +127,19 @@ def prepare_kmmlu_for_sft():
     print(f"\n📊 KMMLU 데이터 로드 중 - 주제: {KMMLU_SUBJECT}")
     
     try:
+        # 전체 데이터셋 크기 확인
+        train_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="train")
+        dev_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="dev")
+        test_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="test")
+        
+        print(f"📈 {KMMLU_SUBJECT} 전체 데이터 통계:")
+        print(f"   - Train: {len(train_full)}개")
+        print(f"   - Dev: {len(dev_full)}개")
+        print(f"   - Test: {len(test_full)}개")
+        print(f"   - 총합: {len(train_full) + len(dev_full) + len(test_full)}개")
+        
         # 특정 주제에서만 데이터 가져오기
-        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"test[:{DATA_SIZE}]")
+        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"train[:{DATA_SIZE}]")
         
         for item in dataset:
             all_data.append({
@@ -191,8 +202,19 @@ def prepare_kmmlu_for_dpo():
     print(f"\n📊 KMMLU DPO 데이터 로드 중 - 주제: {KMMLU_SUBJECT}")
     
     try:
+        # 전체 데이터셋 크기 확인
+        train_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="train")
+        dev_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="dev")
+        test_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="test")
+        
+        print(f"📈 {KMMLU_SUBJECT} 전체 데이터 통계:")
+        print(f"   - Train: {len(train_full)}개")
+        print(f"   - Dev: {len(dev_full)}개")
+        print(f"   - Test: {len(test_full)}개")
+        print(f"   - 총합: {len(train_full) + len(dev_full) + len(test_full)}개")
+        
         # 특정 주제에서만 데이터 가져오기
-        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"test[:{DATA_SIZE}]")
+        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"train[:{DATA_SIZE}]")
         
         for item in dataset:
             question = item['question']
@@ -248,8 +270,19 @@ def prepare_kmmlu_for_rlhf():
     print(f"\n📊 KMMLU RLHF 데이터 로드 중 - 주제: {KMMLU_SUBJECT}")
     
     try:
+        # 전체 데이터셋 크기 확인
+        train_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="train")
+        dev_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="dev")
+        test_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="test")
+        
+        print(f"📈 {KMMLU_SUBJECT} 전체 데이터 통계:")
+        print(f"   - Train: {len(train_full)}개")
+        print(f"   - Dev: {len(dev_full)}개")
+        print(f"   - Test: {len(test_full)}개")
+        print(f"   - 총합: {len(train_full) + len(dev_full) + len(test_full)}개")
+        
         # 특정 주제에서만 데이터 가져오기
-        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"test[:{DATA_SIZE}]")
+        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"train[:{DATA_SIZE}]")
         
         for item in dataset:
             all_data.append({
@@ -1006,8 +1039,8 @@ def train_grpo():
                     
                     # 실시간 로그 출력
                     print(f"\n[샘플 {i+1}]")
-                    print(f"📝 문제: {prompts[i][:100]}...")
-                    print(f"💬 응답: {completion_text[:200]}...")
+                    print(f"📝 문제: {prompts[i]}")
+                    print(f"💬 응답: {completion_text[:]}")
                     print(f"🎯 정답 체크: {is_correct}")
                     print(f"🏆 최종 보상: {reward:.4f}")
                     print("-" * 80)
@@ -1289,16 +1322,31 @@ def train_grpo():
             config.quantization_config = {}
         
         # 수정된 config로 모델 로드
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            token=HF_TOKEN,
-            trust_remote_code=True,
-            config=config,
-            quantization_config=bnb_config if USE_QLORA else None,
-            torch_dtype=torch.float32,  # Mac에서는 항상 float32
-            device_map="cpu",  # CPU 명시적 지정
-            low_cpu_mem_usage=True  # 메모리 효율적 로딩
-        )
+        # 환경에 따라 다른 설정 사용
+        if torch.backends.mps.is_available():
+            # Mac 환경
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID,
+                token=HF_TOKEN,
+                trust_remote_code=True,
+                config=config,
+                quantization_config=bnb_config if USE_QLORA else None,
+                torch_dtype=torch.float32,  # Mac에서는 항상 float32
+                device_map="cpu",  # CPU 명시적 지정
+                low_cpu_mem_usage=True  # 메모리 효율적 로딩
+            )
+        else:
+            # GPU 환경 (엘리스 등)
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID,
+                token=HF_TOKEN,
+                trust_remote_code=True,
+                config=config,
+                quantization_config=bnb_config if USE_QLORA else None,
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto",
+                low_cpu_mem_usage=True
+            )
     
     # QLoRA 준비
     if USE_QLORA:
