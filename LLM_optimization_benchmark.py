@@ -31,7 +31,7 @@ except:
 
 # 비교할 모델들 설정
 #'trillionlabs/Tri-7B'
-base_model_id = 'trillionlabs/Tri-7B' #"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # 기존 모델
+base_model_id = 'openai/gpt-oss-20b' #"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # 기존 모델
 fine_model_id = "/Users/ai/llm_proj/finetune_MobileLLM-600M_GRPO_LoRA_KMMLU/checkpoint-180"  # 파인튜닝 모델
 
 # 개별 실행 시 사용할 모델 (기본값)
@@ -761,9 +761,17 @@ class LLMOptimizationBenchmark:
                 tokenizer.pad_token = tokenizer.eos_token if hasattr(tokenizer, 'eos_token') else tokenizer.eos_token_id
             
             # MXFP4를 bfloat16으로 fallback하도록 설정
+            # Mac(MPS)에서는 BFloat16 미지원, float32 사용
+            if torch.backends.mps.is_available():
+                dtype = torch.float32
+            elif torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+                dtype = torch.bfloat16
+            else:
+                dtype = torch.float32
+                
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_id,
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                torch_dtype=dtype,
                 device_map='auto' if torch.cuda.is_available() else 'cpu',  # GPU 있으면 자동 배치
                 ignore_mismatched_sizes=True,
                 trust_remote_code=True,
@@ -771,6 +779,12 @@ class LLMOptimizationBenchmark:
                 load_in_4bit=False,  # 4bit 로드 비활성화
                 load_in_8bit=False   # 8bit 로드 비활성화
             )
+            
+            # Mac/MPS에서 BFloat16 문제 해결: 모든 파라미터를 float32로 변환
+            if torch.backends.mps.is_available() or dtype == torch.float32:
+                print("📋 모델을 float32로 변환 중...")
+                model = model.float()  # 모든 파라미터를 float32로 변환
+                
             # Mac에서는 mps (Metal Performance Shaders) 사용
             # MPS 관련 에러 때문에 일단 비활성화
             if False and torch.backends.mps.is_available():

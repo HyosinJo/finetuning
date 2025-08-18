@@ -55,6 +55,7 @@ MODEL_ID = "Qwen/Qwen1.5-MoE-A2.7B-Chat"
 MODEL_ID = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 MODEL_ID = "facebook/MobileLLM-600M"
 MODEL_ID = "trillionlabs/Tri-7B"
+MODEL_ID = "openai/gpt-oss-20b"
 
 
 FINE_TUNE_FRAMEWORK = "trl"  # "trl" 또는 "verl (DAPO 인경우)" 선택
@@ -97,8 +98,8 @@ SAVE_STEPS = 100  # 몇 스텝마다 저장할지
 MAX_STEPS = 5000  # 총 학습 스텝
 DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
 LEARNING_RATE = 5e-4  # LoRA는 더 높은 학습률 사용
- # GRPO의 num_generations = 10 로 나누어떨어지도록 수정
-BATCH_SIZE = 10 # VERL DAPO는 8의 배수 필요
+ # GRPO의 GRPO_num_generations = 10 로 나누어떨어지도록 수정
+BATCH_SIZE = 10
 OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
 
 # GRPO 학습 설정
@@ -106,9 +107,9 @@ num_batch_iteration=10
 SAVE_STEPS = 30  # 몇 스텝마다 저장할지
 MAX_STEPS = 5000  # 총 학습 스텝
 DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
-LEARNING_RATE = 5e-5  
- # GRPO의 num_generations = 10 로 나누어떨어지도록 수정
-BATCH_SIZE = 10 
+LEARNING_RATE = 5e-4
+GRPO_num_generation = 10 #oi
+BATCH_SIZE = 10
 OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
 
 
@@ -116,7 +117,6 @@ OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA
 # SFT: markrAI/KoCommercial-Dataset (상업용 한국어 instruction 데이터셋)
 # DPO: maywell/ko_Ultrafeedback_binarized (선호/비선호 쌍이 있는 한국어 데이터셋)
 # PPO/GRPO: kyujinpy/KOR-OpenOrca-Platypus-v3 (고품질 한국어 instruction)
-
 
 
 # KMMLU 데이터 준비 함수들
@@ -485,6 +485,11 @@ def train_sft():
     if USE_QLORA:
         model = prepare_model_for_kbit_training(model)
     
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
+    
     # LoRA 설정
     if USE_LORA or USE_QLORA:
         lora_config = LoraConfig(
@@ -596,6 +601,11 @@ def train_dpo():
     if USE_QLORA:
         model = prepare_model_for_kbit_training(model)
     
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
+    
     # LoRA 설정
     if USE_LORA or USE_QLORA:
         lora_config = LoraConfig(
@@ -698,6 +708,11 @@ def train_orpo():
     # QLoRA 준비
     if USE_QLORA:
         model = prepare_model_for_kbit_training(model)
+    
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
     
     # LoRA 설정
     if USE_LORA or USE_QLORA:
@@ -884,9 +899,14 @@ def train_grpo():
                         max_length=512
                     )
                     
-                    # MPS에서는 CPU로 이동
-                    if torch.backends.mps.is_available():
-                        inputs = {k: v.to('cpu') for k, v in inputs.items()}
+                    # 보상 모델의 디바이스로 이동
+                    if hasattr(reward_model, 'device'):
+                        device = reward_model.device
+                    else:
+                        # 모델의 첫 번째 파라미터의 디바이스 확인
+                        device = next(reward_model.parameters()).device
+                    
+                    inputs = {k: v.to(device) for k, v in inputs.items()}
                     
                     with torch.no_grad():
                         outputs = reward_model(**inputs)
@@ -1039,9 +1059,9 @@ def train_grpo():
         
         return rewards
     
-    # GPU 감지 및 DeepSpeed 자동 설정
+    # GPU 감지 및 DeepSpeed 자동 설정 (엘리스에서는 비활성화)
     deepspeed_config = None
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and False:  # 엘리스에서는 DeepSpeed 비활성화
         print("🚀 GPU 감지됨! DeepSpeed 자동 활성화")
         
         # GPU 메모리에 따라 ZeRO stage 자동 선택
@@ -1063,11 +1083,14 @@ def train_grpo():
             offload_param = False
             print(f"💾 GPU 메모리 {gpu_memory:.1f}GB - ZeRO Stage 1 사용")
         
+        # bf16과 fp16 중 하나만 선택
+        use_bf16 = torch.cuda.is_bf16_supported()
+        
         deepspeed_config = {
             "train_batch_size": BATCH_SIZE,
             "gradient_accumulation_steps": 1,
             "fp16": {
-                "enabled": True,
+                "enabled": not use_bf16,  # bf16이 지원되지 않을 때만 fp16 사용
                 "auto_cast": False,
                 "loss_scale": 0,
                 "initial_scale_power": 16,
@@ -1077,7 +1100,7 @@ def train_grpo():
                 "min_loss_scale": 1
             },
             "bf16": {
-                "enabled": torch.cuda.is_bf16_supported()
+                "enabled": use_bf16  # bf16이 지원되면 bf16 사용
             },
             "zero_optimization": {
                 "stage": zero_stage,
@@ -1119,9 +1142,9 @@ def train_grpo():
         epsilon=0.2,  # surr loss 클리핑 값
         save_steps=SAVE_STEPS,
         output_dir=OUTPUT_DIR,
-        max_completion_length=512,  # max_new_tokens 대신 max_completion_length 사용 (응답 외대)
+        max_completion_length=128,  # max_new_tokens 대신 max_completion_length 사용 (응답 외대)
         max_prompt_length=1024,  # 프롬프트 최대 길이 (질문 최대)
-        num_generations=10,  # 각 프롬프트당 생성할 응답 수
+        num_generations=GRPO_num_generation,  # 각 프롬프트당 생성할 응답 수
         temperature=1.0,  # 생성 온도
         beta=0.1,  # KL 페널티 계수
         logging_steps=1, 
@@ -1144,6 +1167,10 @@ def train_grpo():
             self.trajectories = []
             
         def on_step_end(self, args, state, control, **kwargs):
+            # 10스텝마다 GPU 메모리 사용량 출력
+            if state.global_step % 10 == 0:
+                print_gpu_memory()
+            
             # 매 스텝마다 trajectory 수집
             # state.log_history에서 최신 로그 가져오기
             if state.log_history:
@@ -1211,6 +1238,16 @@ def train_grpo():
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(json_trajectories, f, indent=2, ensure_ascii=False)
     
+    # GPU 메모리 모니터링 함수
+    def print_gpu_memory():
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                print(f"\n🎮 GPU {i} ({torch.cuda.get_device_name(i)}) 메모리 사용량:")
+                print(f"   할당됨: {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
+                print(f"   예약됨: {torch.cuda.memory_reserved(i) / 1024**3:.2f} GB")
+                print(f"   전체: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.2f} GB")
+                print(f"   사용률: {(torch.cuda.memory_allocated(i) / torch.cuda.get_device_properties(i).total_memory) * 100:.1f}%")
+    
     # 모델 로드 (MobileLLM 등 커스텀 모델 지원)
     print(f"🤖 모델 로드 중... ({'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else '풀 파인튜닝'})")
     
@@ -1238,17 +1275,39 @@ def train_grpo():
             device_map="auto"
         )
     else:
+        # Config 먼저 로드하여 quantization_config 문제 해결
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            trust_remote_code=True
+        )
+        
+        # quantization_config가 None이면 빈 dict로 설정
+        if hasattr(config, 'quantization_config') and config.quantization_config is None:
+            print("⚠️ quantization_config가 None입니다. 빈 dict로 설정...")
+            config.quantization_config = {}
+        
+        # 수정된 config로 모델 로드
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_ID,
             token=HF_TOKEN,
+            trust_remote_code=True,
+            config=config,
             quantization_config=bnb_config if USE_QLORA else None,
-            torch_dtype=torch.float32 if not USE_QLORA else None,
-            device_map="auto"
+            torch_dtype=torch.float32,  # Mac에서는 항상 float32
+            device_map="cpu",  # CPU 명시적 지정
+            low_cpu_mem_usage=True  # 메모리 효율적 로딩
         )
     
     # QLoRA 준비
     if USE_QLORA:
         model = prepare_model_for_kbit_training(model)
+    
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
     
     # LoRA 설정
     if USE_LORA or USE_QLORA:
@@ -1262,6 +1321,31 @@ def train_grpo():
         )
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
+    
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
+    
+    # 모델 로드 후 GPU 메모리 사용량 출력
+    print("\n📊 모델 로드 완료!")
+    print_gpu_memory()
+    
+    # 생성 전 디버깅
+    print("\n🔍 테스트 생성 시작...")
+    test_prompt = "문제: 한국의 수도는? A) 서울 B) 부산 C) 대구 D) 인천\n정답을 고르세요:"
+    test_inputs = tokenizer(test_prompt, return_tensors="pt").to(model.device)
+    print(f"입력 토큰 수: {test_inputs['input_ids'].shape}")
+    
+    with torch.no_grad():
+        test_output = model.generate(
+            **test_inputs,
+            max_new_tokens=20,
+            do_sample=False,
+            temperature=0.7
+        )
+    print(f"생성된 텍스트: {tokenizer.decode(test_output[0], skip_special_tokens=True)}")
+    print("✅ 테스트 생성 완료\n")
     
     # GRPO 트레이너
     trainer = GRPOTrainer(

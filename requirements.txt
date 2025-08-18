@@ -157,7 +157,7 @@ tornado==6.5.2
 tqdm==4.67.1
 traitlets==5.14.3
 transformers==4.55.2
--e git+https://github.com/wjtls/19.finetuning_model.git@6ff7cd0d945f3166a53c51fee63d658e34807916#egg=trl&subdirectory=trl_finetune
+-e git+https://github.com/wjtls/19.finetuning_model.git@8f7ea588a4378cda778ee7009d792bbccb5ea0ca#egg=trl&subdirectory=trl_finetune
 typeguard==4.4.4
 types-python-dateutil==2.9.0.20250809
 typing-inspection==0.4.1
