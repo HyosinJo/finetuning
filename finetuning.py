@@ -54,9 +54,8 @@ MODEL_ID = 'google/gemma-3-270m'
 MODEL_ID = "Qwen/Qwen1.5-MoE-A2.7B-Chat"
 MODEL_ID = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 MODEL_ID = "facebook/MobileLLM-600M"
-MODEL_ID = "trillionlabs/Tri-7B"
 MODEL_ID = "openai/gpt-oss-20b"
-
+MODEL_ID = "trillionlabs/Tri-7B"
 
 FINE_TUNE_FRAMEWORK = "trl"  # "trl" 또는 "verl (DAPO 인경우)" 선택
 METHOD = "SFT"  # "SFT", "DPO", "GRPO", "PPO", "DAPO", "ORPO" 중 선택
@@ -106,7 +105,7 @@ OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA
 # STF 학습 설정
 num_train_epochs=100 # 에포크
 SAVE_STEPS = 30  # 몇 스텝마다 저장할지
-MAX_STEPS = 5000  # 총 학습 스텝
+MAX_STEPS = 3000000  # 총 학습 스텝
 DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
 LEARNING_RATE = 5e-4  # LoRA는 더 높은 학습률 사용
 BATCH_SIZE = 10
@@ -639,9 +638,10 @@ def train_sft():
     import pickle
     
     class SFTProgressCallback(TrainerCallback):
-        def __init__(self, tokenizer, dataset):
+        def __init__(self, tokenizer, dataset, model=None):
             self.tokenizer = tokenizer
             self.dataset = dataset
+            self.model = model  # 모델 참조 추가
             self.step_count = 0
             self.trajectories = []  # Trajectory 저장용
             
@@ -668,7 +668,10 @@ def train_sft():
                 # 10 스텝마다 현재 학습 중인 데이터 샘플 출력
                 if state.global_step % 10 == 0:
                     self.step_count += 1
-                    current_idx = (state.global_step * args.per_device_train_batch_size) % len(self.dataset)
+                    # 현재 에포크 내에서의 샘플 인덱스 계산
+                    samples_per_epoch = len(self.dataset)
+                    samples_processed_total = state.global_step * args.per_device_train_batch_size
+                    current_idx = samples_processed_total % samples_per_epoch
                     
                     print(f"\n{'='*100}")
                     print(f"🎯 Step: {state.global_step} | Epoch: {state.epoch:.2f}")
@@ -692,8 +695,20 @@ def train_sft():
                             response = parts[1].strip() if len(parts) > 1 else "N/A"
                             
                             print(f"\n📝 현재 학습 데이터 (인덱스: {current_idx}):")
-                            print(f"질문: {instruction[:200]}..." if len(instruction) > 200 else f"질문: {instruction}")
-                            print(f"정답: {response[:200]}..." if len(response) > 200 else f"정답: {response}")
+                            print(f"📌 질문: {instruction[:200]}..." if len(instruction) > 200 else f"📌 질문: {instruction}")
+                            print(f"✅ 정답: {response[:200]}..." if len(response) > 200 else f"✅ 정답: {response}")
+                            
+                            # Loss 기반 학습 품질 표시 (보상 대신)
+                            current_loss = logs.get('loss', 0)
+                            if current_loss < 1.0:
+                                quality = "🟢 매우 좋음"
+                            elif current_loss < 2.0:
+                                quality = "🟡 좋음"
+                            elif current_loss < 3.0:
+                                quality = "🟠 보통"
+                            else:
+                                quality = "🔴 개선 필요"
+                            print(f"📈 학습 품질: {quality} (Loss: {current_loss:.4f})")
                         else:
                             print(f"\n📝 현재 학습 데이터 (인덱스: {current_idx}):")
                             print(f"{sample_text[:400]}..." if len(sample_text) > 400 else sample_text)
