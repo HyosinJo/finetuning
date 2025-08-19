@@ -13,9 +13,7 @@ import subprocess
 from datetime import datetime
 
 
-traj_path =  "/Users/ai/llm_proj/finetune_MobileLLM-600M_GRPO_LoRA_KMMLU/checkpoint-180/trajectories.json"
-
-
+traj_path =  "/Users/ai/llm_proj/finetune_gpt-oss-20b_SFT_LoRA_heegyu/CoT-collection-ko/checkpoint-1890/trajectories.json"
 
 
 
@@ -24,8 +22,178 @@ def load_trajectory(json_path):
     with open(json_path, 'r') as f:
         return json.load(f)
 
-def plot_trajectories(data, save_dir):
-    """trajectory 데이터를 그래프로 시각화"""
+def detect_training_type(data):
+    """trajectory 데이터에서 학습 방식 자동 감지"""
+    # 첫 번째 데이터 항목의 키를 확인
+    if not data:
+        return "unknown"
+    
+    first_item = data[0]
+    
+    # GRPO 특징: reward, kl, entropy 등이 있음
+    if 'reward' in first_item or 'kl' in first_item or 'entropy' in first_item:
+        return "GRPO"
+    # SFT 특징: mean_token_accuracy가 있고 reward/kl이 없음
+    elif 'mean_token_accuracy' in first_item and 'reward' not in first_item:
+        return "SFT"
+    else:
+        return "unknown"
+
+def plot_sft_trajectories(data, save_dir):
+    """SFT trajectory 데이터를 그래프로 시각화"""
+    # 데이터 추출
+    steps = [d['step'] for d in data]
+    
+    # SFT 메트릭 수집
+    metrics = {
+        'loss': [],
+        'mean_token_accuracy': [],
+        'learning_rate': [],
+        'grad_norm': [],
+        'gpu_memory_allocated': [],
+        'epoch': []
+    }
+    
+    for d in data:
+        for key in metrics:
+            if key in d and d[key] is not None:
+                metrics[key].append(d[key])
+            else:
+                metrics[key].append(np.nan)
+    
+    # 서브플롯 생성 (2x3 레이아웃)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    # 1. Loss 플롯
+    ax = axes[0]
+    mask = ~np.isnan(metrics['loss'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['loss'])[mask], 'b-', marker='o', markersize=3)
+    ax.set_title('Loss over Steps (SFT)', fontsize=14)
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Loss')
+    ax.grid(True, alpha=0.3)
+    
+    # 2. Token Accuracy 플롯
+    ax = axes[1]
+    mask = ~np.isnan(metrics['mean_token_accuracy'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['mean_token_accuracy'])[mask], 'g-', marker='o', markersize=3)
+    ax.set_title('Mean Token Accuracy over Steps', fontsize=14)
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Accuracy')
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim([0, 1])
+    
+    # 3. Learning Rate 플롯
+    ax = axes[2]
+    mask = ~np.isnan(metrics['learning_rate'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['learning_rate'])[mask], 'c-', marker='o', markersize=3)
+    ax.set_title('Learning Rate Schedule', fontsize=14)
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Learning Rate')
+    ax.grid(True, alpha=0.3)
+    ax.ticklabel_format(style='scientific', axis='y', scilimits=(0,0))
+    
+    # 4. Gradient Norm 플롯
+    ax = axes[3]
+    mask = ~np.isnan(metrics['grad_norm'])
+    ax.semilogy(np.array(steps)[mask], np.array(metrics['grad_norm'])[mask], 'orange', marker='o', markersize=3)
+    ax.set_title('Gradient Norm (log scale)', fontsize=14)
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Gradient Norm')
+    ax.grid(True, alpha=0.3)
+    
+    # 5. GPU Memory Usage 플롯
+    ax = axes[4]
+    mask_allocated = ~np.isnan(metrics['gpu_memory_allocated'])
+    
+    # gpu_memory_reserved 메트릭 추가
+    gpu_memory_reserved = []
+    for d in data:
+        if 'gpu_memory_reserved' in d and d['gpu_memory_reserved'] is not None:
+            gpu_memory_reserved.append(d['gpu_memory_reserved'])
+        else:
+            gpu_memory_reserved.append(np.nan)
+    mask_reserved = ~np.isnan(gpu_memory_reserved)
+    
+    if np.any(mask_allocated):
+        # 전체 메모리 (reserved)
+        if np.any(mask_reserved):
+            ax.plot(np.array(steps)[mask_reserved], np.array(gpu_memory_reserved)[mask_reserved], 
+                   'c-', marker='s', markersize=3, label='Total Available', linewidth=2)
+        
+        # 할당된 메모리 (allocated)
+        ax.plot(np.array(steps)[mask_allocated], np.array(metrics['gpu_memory_allocated'])[mask_allocated], 
+               'm-', marker='o', markersize=3, label='Allocated', linewidth=2)
+        
+        ax.set_title('GPU Memory Usage (GB)', fontsize=14)
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Memory (GB)')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        # 최대값 표시
+        if np.any(mask_allocated):
+            max_alloc = np.nanmax(metrics['gpu_memory_allocated'])
+            ax.axhline(y=max_alloc, color='m', linestyle='--', alpha=0.5)
+            ax.text(0.02, max_alloc, f'Max: {max_alloc:.1f}GB', 
+                   transform=ax.get_yaxis_transform(), color='m', fontsize=9)
+    else:
+        ax.text(0.5, 0.5, 'No GPU memory data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('GPU Memory Usage', fontsize=14)
+    
+    # 6. 학습 진행 상황 요약
+    ax = axes[5]
+    ax.axis('off')
+    
+    # 최종 지표 계산
+    final_loss = metrics['loss'][-1] if metrics['loss'] else np.nan
+    final_acc = metrics['mean_token_accuracy'][-1] if metrics['mean_token_accuracy'] else np.nan
+    avg_grad_norm = np.nanmean(metrics['grad_norm'])
+    
+    # 학습 개선도 계산
+    if len(metrics['loss']) > 1:
+        loss_improvement = metrics['loss'][0] - metrics['loss'][-1]
+        acc_improvement = metrics['mean_token_accuracy'][-1] - metrics['mean_token_accuracy'][0]
+    else:
+        loss_improvement = acc_improvement = 0
+    
+    summary_text = f"""SFT Training Summary
+    
+Total Steps: {len(steps)}
+Total Epochs: {metrics['epoch'][-1]:.2f}
+
+Final Metrics:
+  Loss: {final_loss:.4f}
+  Accuracy: {final_acc:.4f}
+  
+Improvement:
+  Loss ↓: {loss_improvement:.4f}
+  Accuracy ↑: {acc_improvement:.4f}
+  
+Average Gradient Norm: {avg_grad_norm:.4f}
+
+Training Quality:
+  {'🟢 Excellent' if final_acc > 0.95 else '🟡 Good' if final_acc > 0.85 else '🔴 Needs improvement'}
+"""
+    
+    ax.text(0.1, 0.9, summary_text, transform=ax.transAxes, 
+            fontsize=11, verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+    
+    plt.suptitle('SFT (Supervised Fine-Tuning) Progress', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    
+    # 저장
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = os.path.join(save_dir, f'sft_trajectory_plot_{timestamp}.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"📊 SFT 그래프 저장됨: {save_path}")
+    
+    plt.show()
+
+def plot_grpo_trajectories(data, save_dir):
+    """GRPO trajectory 데이터를 그래프로 시각화 (기존 함수)"""
     # 데이터 추출
     steps = [d['step'] for d in data]
     
@@ -213,6 +381,13 @@ def start_tensorboard(log_dir):
     subprocess.Popen(cmd, shell=True)
     print(f"✅ 텐서보드가 실행되었습니다: http://localhost:6006")
 
+
+
+
+
+
+
+
 def main():
     # 기본 경로 또는 인자로 받은 경로
     if len(sys.argv) > 1:
@@ -234,8 +409,12 @@ def main():
     # 저장 디렉토리
     save_dir = os.path.dirname(json_path)
     
-    # 그래프 그리기
-    plot_trajectories(data, save_dir)
+    finetuning_type = detect_training_type(data)
+    if finetuning_type == "GRPO":
+        plot_grpo_trajectories(data, save_dir)
+    if finetuning_type =='SFT':
+        plot_sft_trajectories(data, save_dir)
+
     
     # 텐서보드 시작 (로그 디렉토리가 있다면)
     log_dir = "./logs"

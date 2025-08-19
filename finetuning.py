@@ -4,7 +4,7 @@ import sys
 #리워드모델(답변품질) , 하이브리드 방식
 #GRPO 데이터셋으로 변경 KMMLU
 #파인튜닝 데이터셋 선정 리워드모델선정
-
+# 다양한 데이터 증강방식
 # 리워드모델 변경
 # 테스트 
 
@@ -54,8 +54,8 @@ MODEL_ID = 'google/gemma-3-270m'
 MODEL_ID = "Qwen/Qwen1.5-MoE-A2.7B-Chat"
 MODEL_ID = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 MODEL_ID = "facebook/MobileLLM-600M"
-MODEL_ID = "openai/gpt-oss-20b"
 MODEL_ID = "trillionlabs/Tri-7B"
+MODEL_ID = "openai/gpt-oss-20b"
 
 FINE_TUNE_FRAMEWORK = "trl"  # "trl" 또는 "verl (DAPO 인경우)" 선택
 METHOD = "SFT"  # "SFT", "DPO", "GRPO", "PPO", "DAPO", "ORPO" 중 선택
