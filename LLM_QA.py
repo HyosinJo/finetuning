@@ -24,7 +24,6 @@ MODEL_ID = 'trillionlabs/Tri-7B'
 
 
 MODEL_ID = "/Users/ai/llm_proj/finetune_gpt-oss-20b_SFT_LoRA_heegyu/CoT-collection-ko/checkpoint-1890"
-# custom_prompt = f"Human: {question}\n\nAssistant:"  # 이 줄은 삭제 - generate_response 함수 내에서 정의
 MAX_NEW_TOKENS = 256
 TEMPERATURE = 0.2
 TOP_P = 0.9
@@ -134,7 +133,7 @@ class LLMQA:
     def generate_response(self, question):
         """질문에 대한 응답 생성"""
         # 프롬프트 포맷팅 - 간단한 대화형으로 변경
-        prompt = custom_prompt
+        prompt = f"Human: {question}\n\nAssistant:"
         
         # 토큰화
         inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)

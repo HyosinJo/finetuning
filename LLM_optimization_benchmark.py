@@ -1041,8 +1041,23 @@ def run_comparison():
     os.makedirs(common_result_dir, exist_ok=True)
     print(f"\n📁 공통 결과 폴더: {common_result_dir}")
     
+    # 2. 파인튜닝 모델 벤치마크
+    print("\n\n\n\n" + "="*80)
+    print("2️⃣  파인튜닝 모델 벤치마크 시작")
+    print("="*80)
+    result_dir_fine, results_fine = run_single_model_benchmark(
+        fine_model_id, 
+        optimizations=[],  # 파인튜닝 모델 자체만 평가
+        model_type="finetuned",
+        result_dir=common_result_dir
+    )
+    results_summary['finetuned'] = {
+        'result_dir': result_dir_fine,
+        'model_id': fine_model_id
+    }
+
     # 1. 기존 모델 벤치마크
-    print("\n" + "="*80)
+    print("\n\n\n\n" + "="*80)
     print("1️⃣  기존 모델 벤치마크 시작")
     print("="*80)
     result_dir_base, results_base = run_single_model_benchmark(
@@ -1056,23 +1071,9 @@ def run_comparison():
         'model_id': base_model_id
     }
     
-    # 2. 파인튜닝 모델 벤치마크
-    print("\n" + "="*80)
-    print("2️⃣  파인튜닝 모델 벤치마크 시작")
-    print("="*80)
-    result_dir_fine, results_fine = run_single_model_benchmark(
-        fine_model_id, 
-        optimizations=[],  # 파인튜닝 모델 자체만 평가
-        model_type="finetuned",
-        result_dir=common_result_dir
-    )
-    results_summary['finetuned'] = {
-        'result_dir': result_dir_fine,
-        'model_id': fine_model_id
-    }
     
     # 3. 경량화된 파인튜닝 모델 벤치마크
-    print("\n" + "="*80)
+    print("\n\n\n\n" + "="*80)
     print("3️⃣  경량화된 파인튜닝 모델 벤치마크 시작")
     print("="*80)
     result_dir_quant, results_quant = run_single_model_benchmark(
