@@ -21,15 +21,19 @@ MODEL_ID = "facebook/MobileLLM-600M"
 MODEL_ID = 'trillionlabs/Tri-7B'
 # MODEL_ID = "/Users/ai/llm_proj/finetune_DeepSeek-R1-Distill-Qwen-1.5B_GRPO_LoRA_KMMLU/checkpoint-150"  # 로컬 체크포인트
 #MODEL_ID = "/Users/ai/llm_proj/finetune_DeepSeek-R1-Distill-Qwen-1.5B_GRPO_LoRA_KMMLU/checkpoint-150"
+
+
+MODEL_ID = "/Users/ai/llm_proj/finetune_gpt-oss-20b_SFT_LoRA_heegyu/CoT-collection-ko/checkpoint-1890"
+# custom_prompt = f"Human: {question}\n\nAssistant:"  # 이 줄은 삭제 - generate_response 함수 내에서 정의
 MAX_NEW_TOKENS = 256
-TEMPERATURE = 0.7
+TEMPERATURE = 0.2
 TOP_P = 0.9
 # ============================================
 
 class LLMQA:
     def __init__(self, model_id):
         self.model_id = model_id
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
         print(f"\n🤖 LLM Q&A 시스템 시작")
         print(f"📍 모델 경로: {model_id}")
         print(f"💻 디바이스: {self.device}")
@@ -76,7 +80,7 @@ class LLMQA:
                 # 베이스 모델 로드
                 base_model = AutoModelForCausalLM.from_pretrained(
                     base_model_id,
-                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                     device_map='auto' if torch.cuda.is_available() else None,
                     trust_remote_code=True,
                     token=os.getenv("HF_TOKEN")
@@ -90,7 +94,7 @@ class LLMQA:
                 print(f"🤗 {'HuggingFace' if not is_local else '로컬'} 모델 로드 중...")
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_id,
-                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                     device_map='auto' if torch.cuda.is_available() else None,
                     trust_remote_code=True,
                     token=os.getenv("HF_TOKEN") if not is_local else None
@@ -130,14 +134,17 @@ class LLMQA:
     def generate_response(self, question):
         """질문에 대한 응답 생성"""
         # 프롬프트 포맷팅 - 간단한 대화형으로 변경
-        prompt = f"Human: {question}\n\nAssistant:"
+        prompt = custom_prompt
         
         # 토큰화
         inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
         # token_type_ids가 있으면 제거 (일부 모델은 지원하지 않음)
         if 'token_type_ids' in inputs:
             del inputs['token_type_ids']
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        # 모델의 dtype으로 입력 텐서 변환
+        model_dtype = next(self.model.parameters()).dtype
+        inputs = {k: v.to(self.device).to(model_dtype) if v.dtype.is_floating_point else v.to(self.device) 
+                  for k, v in inputs.items()}
         
         # 추론 시간 측정
         start_time = time.time()

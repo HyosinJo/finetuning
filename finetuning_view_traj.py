@@ -6,15 +6,45 @@ Usage: python view_traj.py [trajectory_json_path]
 
 import json
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import numpy as np
 import sys
 import os
 import subprocess
 from datetime import datetime
+import platform
 
+# 한글 폰트 설정 - 더 확실한 방법
+font_path = None
+if platform.system() == 'Darwin':  # macOS
+    # 시스템 폰트 경로에서 직접 찾기
+    font_paths = [
+        '/System/Library/Fonts/Supplemental/AppleSDGothicNeo.ttc',
+        '/Library/Fonts/AppleSDGothicNeo.ttc',
+        '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+        '/Library/Fonts/NanumGothic.ttf',
+        '/Users/*/Library/Fonts/NanumGothic.ttf'
+    ]
+    for path in font_paths:
+        if os.path.exists(path):
+            font_path = path
+            break
+    
+    if font_path:
+        font_prop = fm.FontProperties(fname=font_path)
+        plt.rcParams['font.family'] = font_prop.get_name()
+        fm.fontManager.addfont(font_path)
+    else:
+        # 폴백: 사용 가능한 한글 폰트 자동 선택
+        for font in fm.fontManager.ttflist:
+            if 'Nanum' in font.name or 'Gothic' in font.name:
+                plt.rcParams['font.family'] = font.name
+                break
+
+# 마이너스 기호 깨짐 방지
+plt.rcParams['axes.unicode_minus'] = False
 
 traj_path =  "/Users/ai/llm_proj/finetune_gpt-oss-20b_SFT_LoRA_heegyu/CoT-collection-ko/checkpoint-1890/trajectories.json"
-
 
 
 def load_trajectory(json_path):
@@ -69,7 +99,7 @@ def plot_sft_trajectories(data, save_dir):
     ax = axes[0]
     mask = ~np.isnan(metrics['loss'])
     ax.plot(np.array(steps)[mask], np.array(metrics['loss'])[mask], 'b-', marker='o', markersize=3)
-    ax.set_title('Loss over Steps (SFT)', fontsize=14)
+    ax.set_title('Loss (SFT)', fontsize=14)
     ax.set_xlabel('Step')
     ax.set_ylabel('Loss')
     ax.grid(True, alpha=0.3)
@@ -78,7 +108,7 @@ def plot_sft_trajectories(data, save_dir):
     ax = axes[1]
     mask = ~np.isnan(metrics['mean_token_accuracy'])
     ax.plot(np.array(steps)[mask], np.array(metrics['mean_token_accuracy'])[mask], 'g-', marker='o', markersize=3)
-    ax.set_title('Mean Token Accuracy over Steps', fontsize=14)
+    ax.set_title('Mean Token Accuracy', fontsize=14)
     ax.set_xlabel('Step')
     ax.set_ylabel('Accuracy')
     ax.grid(True, alpha=0.3)
@@ -98,7 +128,7 @@ def plot_sft_trajectories(data, save_dir):
     ax = axes[3]
     mask = ~np.isnan(metrics['grad_norm'])
     ax.semilogy(np.array(steps)[mask], np.array(metrics['grad_norm'])[mask], 'orange', marker='o', markersize=3)
-    ax.set_title('Gradient Norm (log scale)', fontsize=14)
+    ax.set_title('Gradient Norm', fontsize=14)
     ax.set_xlabel('Step')
     ax.set_ylabel('Gradient Norm')
     ax.grid(True, alpha=0.3)
@@ -158,12 +188,46 @@ def plot_sft_trajectories(data, save_dir):
     else:
         loss_improvement = acc_improvement = 0
     
+    # 수렴 판단 (최근 100스텝)
+    convergence_status = "수렴하지 않음"
+    convergence_details = ""
+    
+    if len(metrics['loss']) > 100:
+        # 최근 100스텝의 지표들
+        recent_loss = metrics['loss'][-100:]
+        recent_grad = metrics['grad_norm'][-100:]
+        recent_acc = metrics['mean_token_accuracy'][-100:]
+        
+        # Loss 변화율 (표준편차)
+        loss_std = np.nanstd(recent_loss)
+        loss_mean = np.nanmean(recent_loss)
+        loss_cv = loss_std / loss_mean if loss_mean > 0 else 999  # 변동계수
+        
+        # Gradient norm 평균
+        grad_mean = np.nanmean(recent_grad)
+        
+        # Accuracy 변화
+        acc_change = recent_acc[-1] - recent_acc[0]
+        
+        # 수렴 조건
+        is_loss_stable = loss_cv < 0.02  # Loss 변동 n% 미만
+        is_acc_stable = abs(acc_change) < 0.02  # Accuracy 변화 n% 미만
+        
+        if is_loss_stable and is_acc_stable:
+            convergence_status = "수렴"
+            convergence_details = f"\n  최근 100스탭 Loss 변동: {loss_cv:.3f} (<0.01)\n  ACC 변동: {acc_change:.3f}"
+        elif is_loss_stable or is_acc_stable:
+            convergence_status = "수렴"
+            convergence_details = f"\n  최근 100스탭 Loss 변동: {loss_cv:.3f}\n  ACC 변동: {acc_change:.3f}"
+        else:
+            convergence_details = f"\n  최근 100스탭 Loss 변동: {loss_cv:.3f}\n  ACC 변동: {acc_change:.3f}"
+    
     summary_text = f"""SFT Training Summary
     
 Total Steps: {len(steps)}
 Total Epochs: {metrics['epoch'][-1]:.2f}
 
-Final Metrics:
+Final :
   Loss: {final_loss:.4f}
   Accuracy: {final_acc:.4f}
   
@@ -173,12 +237,12 @@ Improvement:
   
 Average Gradient Norm: {avg_grad_norm:.4f}
 
-Training Quality:
-  {'🟢 Excellent' if final_acc > 0.95 else '🟡 Good' if final_acc > 0.85 else '🔴 Needs improvement'}
+Convergence 상태:
+  {convergence_status}{convergence_details}
 """
     
     ax.text(0.1, 0.9, summary_text, transform=ax.transAxes, 
-            fontsize=11, verticalalignment='top', fontfamily='monospace',
+            fontsize=11, verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
     
     plt.suptitle('SFT (Supervised Fine-Tuning) Progress', fontsize=16, fontweight='bold')
@@ -360,7 +424,7 @@ Reward Progress:
         summary_text += f"\nAvg Reward: {np.mean(reward_values):.4f}"
     
     ax.text(0.1, 0.9, summary_text, transform=ax.transAxes, 
-            fontsize=10, verticalalignment='top', fontfamily='monospace',
+            fontsize=10, verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
     plt.tight_layout()
