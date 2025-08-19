@@ -1,0 +1,496 @@
+#!/usr/bin/env python3
+"""
+Trajectory Visualization Tool
+Usage: python view_traj.py [trajectory_json_path]
+"""
+
+import json
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import numpy as np
+import sys
+import os
+import subprocess
+from datetime import datetime
+import platform
+
+# 한글 폰트 설정 - 더 확실한 방법
+font_path = None
+if platform.system() == 'Darwin':  # macOS
+    # 시스템 폰트 경로에서 직접 찾기
+    font_paths = [
+        '/System/Library/Fonts/Supplemental/AppleSDGothicNeo.ttc',
+        '/Library/Fonts/AppleSDGothicNeo.ttc',
+        '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+        '/Library/Fonts/NanumGothic.ttf',
+        '/Users/*/Library/Fonts/NanumGothic.ttf'
+    ]
+    for path in font_paths:
+        if os.path.exists(path):
+            font_path = path
+            break
+    
+    if font_path:
+        font_prop = fm.FontProperties(fname=font_path)
+        plt.rcParams['font.family'] = font_prop.get_name()
+        fm.fontManager.addfont(font_path)
+    else:
+        # 폴백: 사용 가능한 한글 폰트 자동 선택
+        for font in fm.fontManager.ttflist:
+            if 'Nanum' in font.name or 'Gothic' in font.name:
+                plt.rcParams['font.family'] = font.name
+                break
+
+# 마이너스 기호 깨짐 방지
+plt.rcParams['axes.unicode_minus'] = False
+
+traj_path =  "/Users/ai/llm_proj/finetune_gpt-oss-20b_SFT_LoRA_heegyu/CoT-collection-ko/checkpoint-1890/trajectories.json"
+
+
+def load_trajectory(json_path):
+    """JSON 파일에서 trajectory 데이터 로드"""
+    with open(json_path, 'r') as f:
+        return json.load(f)
+
+def detect_training_type(data):
+    """trajectory 데이터에서 학습 방식 자동 감지"""
+    # 첫 번째 데이터 항목의 키를 확인
+    if not data:
+        return "unknown"
+    
+    first_item = data[0]
+    
+    # GRPO 특징: reward, kl, entropy 등이 있음
+    if 'reward' in first_item or 'kl' in first_item or 'entropy' in first_item:
+        return "GRPO"
+    # SFT 특징: mean_token_accuracy가 있고 reward/kl이 없음
+    elif 'mean_token_accuracy' in first_item and 'reward' not in first_item:
+        return "SFT"
+    else:
+        return "unknown"
+
+def plot_sft_trajectories(data, save_dir):
+    """SFT trajectory 데이터를 그래프로 시각화"""
+    # 데이터 추출
+    steps = [d['step'] for d in data]
+    
+    # SFT 메트릭 수집
+    metrics = {
+        'loss': [],
+        'mean_token_accuracy': [],
+        'learning_rate': [],
+        'grad_norm': [],
+        'gpu_memory_allocated': [],
+        'epoch': []
+    }
+    
+    for d in data:
+        for key in metrics:
+            if key in d and d[key] is not None:
+                metrics[key].append(d[key])
+            else:
+                metrics[key].append(np.nan)
+    
+    # 서브플롯 생성 (2x3 레이아웃)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    # 1. Loss 플롯
+    ax = axes[0]
+    mask = ~np.isnan(metrics['loss'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['loss'])[mask], 'b-', marker='o', markersize=3)
+    ax.set_title('Loss (SFT)', fontsize=14)
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Loss')
+    ax.grid(True, alpha=0.3)
+    
+    # 2. Token Accuracy 플롯
+    ax = axes[1]
+    mask = ~np.isnan(metrics['mean_token_accuracy'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['mean_token_accuracy'])[mask], 'g-', marker='o', markersize=3)
+    ax.set_title('Mean Token Accuracy', fontsize=14)
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Accuracy')
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim([0, 1])
+    
+    # 3. Learning Rate 플롯
+    ax = axes[2]
+    mask = ~np.isnan(metrics['learning_rate'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['learning_rate'])[mask], 'c-', marker='o', markersize=3)
+    ax.set_title('Learning Rate Schedule', fontsize=14)
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Learning Rate')
+    ax.grid(True, alpha=0.3)
+    ax.ticklabel_format(style='scientific', axis='y', scilimits=(0,0))
+    
+    # 4. Gradient Norm 플롯
+    ax = axes[3]
+    mask = ~np.isnan(metrics['grad_norm'])
+    ax.semilogy(np.array(steps)[mask], np.array(metrics['grad_norm'])[mask], 'orange', marker='o', markersize=3)
+    ax.set_title('Gradient Norm', fontsize=14)
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Gradient Norm')
+    ax.grid(True, alpha=0.3)
+    
+    # 5. GPU Memory Usage 플롯
+    ax = axes[4]
+    mask_allocated = ~np.isnan(metrics['gpu_memory_allocated'])
+    
+    # gpu_memory_reserved 메트릭 추가
+    gpu_memory_reserved = []
+    for d in data:
+        if 'gpu_memory_reserved' in d and d['gpu_memory_reserved'] is not None:
+            gpu_memory_reserved.append(d['gpu_memory_reserved'])
+        else:
+            gpu_memory_reserved.append(np.nan)
+    mask_reserved = ~np.isnan(gpu_memory_reserved)
+    
+    if np.any(mask_allocated):
+        # 전체 메모리 (reserved)
+        if np.any(mask_reserved):
+            ax.plot(np.array(steps)[mask_reserved], np.array(gpu_memory_reserved)[mask_reserved], 
+                   'c-', marker='s', markersize=3, label='Total Available', linewidth=2)
+        
+        # 할당된 메모리 (allocated)
+        ax.plot(np.array(steps)[mask_allocated], np.array(metrics['gpu_memory_allocated'])[mask_allocated], 
+               'm-', marker='o', markersize=3, label='Allocated', linewidth=2)
+        
+        ax.set_title('GPU Memory Usage (GB)', fontsize=14)
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Memory (GB)')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        # 최대값 표시
+        if np.any(mask_allocated):
+            max_alloc = np.nanmax(metrics['gpu_memory_allocated'])
+            ax.axhline(y=max_alloc, color='m', linestyle='--', alpha=0.5)
+            ax.text(0.02, max_alloc, f'Max: {max_alloc:.1f}GB', 
+                   transform=ax.get_yaxis_transform(), color='m', fontsize=9)
+    else:
+        ax.text(0.5, 0.5, 'No GPU memory data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('GPU Memory Usage', fontsize=14)
+    
+    # 6. 학습 진행 상황 요약
+    ax = axes[5]
+    ax.axis('off')
+    
+    # 최종 지표 계산
+    final_loss = metrics['loss'][-1] if metrics['loss'] else np.nan
+    final_acc = metrics['mean_token_accuracy'][-1] if metrics['mean_token_accuracy'] else np.nan
+    avg_grad_norm = np.nanmean(metrics['grad_norm'])
+    
+    # 학습 개선도 계산
+    if len(metrics['loss']) > 1:
+        loss_improvement = metrics['loss'][0] - metrics['loss'][-1]
+        acc_improvement = metrics['mean_token_accuracy'][-1] - metrics['mean_token_accuracy'][0]
+    else:
+        loss_improvement = acc_improvement = 0
+    
+    # 수렴 판단 (최근 100스텝)
+    convergence_status = "수렴하지 않음"
+    convergence_details = ""
+    
+    if len(metrics['loss']) > 100:
+        # 최근 100스텝의 지표들
+        recent_loss = metrics['loss'][-100:]
+        recent_grad = metrics['grad_norm'][-100:]
+        recent_acc = metrics['mean_token_accuracy'][-100:]
+        
+        # Loss 변화율 (표준편차)
+        loss_std = np.nanstd(recent_loss)
+        loss_mean = np.nanmean(recent_loss)
+        loss_cv = loss_std / loss_mean if loss_mean > 0 else 999  # 변동계수
+        
+        # Gradient norm 평균
+        grad_mean = np.nanmean(recent_grad)
+        
+        # Accuracy 변화
+        acc_change = recent_acc[-1] - recent_acc[0]
+        
+        # 수렴 조건
+        is_loss_stable = loss_cv < 0.02  # Loss 변동 n% 미만
+        is_acc_stable = abs(acc_change) < 0.02  # Accuracy 변화 n% 미만
+        
+        if is_loss_stable and is_acc_stable:
+            convergence_status = "수렴"
+            convergence_details = f"\n  최근 100스탭 Loss 변동: {loss_cv:.3f} (<0.01)\n  ACC 변동: {acc_change:.3f}"
+        elif is_loss_stable or is_acc_stable:
+            convergence_status = "수렴"
+            convergence_details = f"\n  최근 100스탭 Loss 변동: {loss_cv:.3f}\n  ACC 변동: {acc_change:.3f}"
+        else:
+            convergence_details = f"\n  최근 100스탭 Loss 변동: {loss_cv:.3f}\n  ACC 변동: {acc_change:.3f}"
+    
+    summary_text = f"""SFT Training Summary
+    
+Total Steps: {len(steps)}
+Total Epochs: {metrics['epoch'][-1]:.2f}
+
+Final :
+  Loss: {final_loss:.4f}
+  Accuracy: {final_acc:.4f}
+  
+Improvement:
+  Loss ↓: {loss_improvement:.4f}
+  Accuracy ↑: {acc_improvement:.4f}
+  
+Average Gradient Norm: {avg_grad_norm:.4f}
+
+Convergence 상태:
+  {convergence_status}{convergence_details}
+"""
+    
+    ax.text(0.1, 0.9, summary_text, transform=ax.transAxes, 
+            fontsize=11, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+    
+    plt.suptitle('SFT (Supervised Fine-Tuning) Progress', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    
+    # 저장
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = os.path.join(save_dir, f'sft_trajectory_plot_{timestamp}.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"📊 SFT 그래프 저장됨: {save_path}")
+    
+    plt.show()
+
+def plot_grpo_trajectories(data, save_dir):
+    """GRPO trajectory 데이터를 그래프로 시각화 (기존 함수)"""
+    # 데이터 추출
+    steps = [d['step'] for d in data]
+    
+    # 메트릭별 데이터 수집
+    metrics = {
+        'loss': [],
+        'reward': [],
+        'kl': [],
+        'entropy': [],
+        'learning_rate': [],
+        'grad_norm': [],
+        'clip_ratio_mean': []
+    }
+    
+    for d in data:
+        for key in metrics:
+            if key in d and d[key] is not None:
+                metrics[key].append(d[key])
+            else:
+                metrics[key].append(np.nan)
+    
+    # 서브플롯 생성
+    fig, axes = plt.subplots(3, 3, figsize=(15, 12))
+    axes = axes.flatten()
+    
+    # 1. Loss 플롯
+    # Loss: 모델이 얼마나 잘 학습하고 있는지 나타내는 핵심 지표
+    # 낮을수록 좋음. 일반적으로 학습이 진행되면서 감소해야 함
+    ax = axes[0]
+    mask = ~np.isnan(metrics['loss'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['loss'])[mask], 'b-', marker='o', markersize=3)
+    ax.set_title('Loss over Steps')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Loss')
+    ax.grid(True, alpha=0.3)
+    
+    # 2. Reward 플롯 (10스텝마다만 있음)
+    # Reward: GRPO에서 모델 응답의 품질을 나타내는 지표
+    # - 품질 점수(보통 음수) + 정답 보너스/페널티
+    # - 높을수록 좋음. GRPO는 10스텝마다 데이터 수집 후 보상 계산
+    ax = axes[1]
+    reward_steps = []
+    reward_values = []
+    for i, (s, r) in enumerate(zip(steps, metrics['reward'])):
+        if not np.isnan(r):
+            reward_steps.append(s)
+            reward_values.append(r)
+    if reward_steps:
+        ax.plot(reward_steps, reward_values, 'r-', marker='s', markersize=8, linewidth=2)
+        ax.scatter(reward_steps, reward_values, c='red', s=100, zorder=5)
+        # 보상값 텍스트 추가
+        for s, r in zip(reward_steps, reward_values):
+            ax.annotate(f'{r:.3f}', (s, r), textcoords="offset points", xytext=(0,10), ha='center', fontsize=8)
+    ax.set_title('Reward over Steps (every 10 steps)')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Reward')
+    ax.grid(True, alpha=0.3)
+    
+    # 3. KL Divergence 플롯
+    # KL Divergence: 현재 모델이 원본 모델에서 얼마나 벗어났는지 측정
+    # - 너무 높으면: 모델이 원본과 너무 달라짐 (과적합 위험)
+    # - 너무 낮으면: 학습이 충분히 안됨
+    # - 일반적으로 0.01~0.1 범위가 적당
+    ax = axes[2]
+    mask = ~np.isnan(metrics['kl'])
+    ax.semilogy(np.array(steps)[mask], np.array(metrics['kl'])[mask], 'g-', marker='o', markersize=3)
+    ax.set_title('KL Divergence over Steps (log scale)')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('KL Divergence')
+    ax.grid(True, alpha=0.3)
+    
+    # 4. Entropy 플롯
+    # Entropy: 모델 출력의 불확실성/다양성 측정
+    # - 높으면: 모델이 여러 옵션을 고려 (탐색적)
+    # - 낮으면: 모델이 특정 답변에 확신 (결정적)
+    # - 너무 낮으면 다양성 부족, 너무 높으면 불안정
+    ax = axes[3]
+    mask = ~np.isnan(metrics['entropy'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['entropy'])[mask], 'm-', marker='o', markersize=3)
+    ax.set_title('Entropy over Steps')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Entropy')
+    ax.grid(True, alpha=0.3)
+    
+    # 5. Learning Rate 플롯
+    # Learning Rate: 학습 속도를 제어하는 하이퍼파라미터
+    # - 높으면: 빠른 학습 but 불안정할 수 있음
+    # - 낮으면: 안정적 but 느린 학습
+    # - 보통 스케줄러에 의해 점진적으로 감소
+    ax = axes[4]
+    mask = ~np.isnan(metrics['learning_rate'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['learning_rate'])[mask], 'c-', marker='o', markersize=3)
+    ax.set_title('Learning Rate over Steps')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Learning Rate')
+    ax.grid(True, alpha=0.3)
+    ax.ticklabel_format(style='scientific', axis='y', scilimits=(0,0))
+    
+    # 6. Gradient Norm 플롯 (log scale)
+    # Gradient Norm: 그래디언트의 크기 (학습 신호의 강도)
+    # - 너무 크면: gradient exploding (발산) 위험
+    # - 너무 작으면: vanishing gradient (학습 정체)
+    # - 안정적인 학습에서는 일정한 범위 유지
+    ax = axes[5]
+    mask = ~np.isnan(metrics['grad_norm'])
+    ax.semilogy(np.array(steps)[mask], np.array(metrics['grad_norm'])[mask], 'orange', marker='o', markersize=3)
+    ax.set_title('Gradient Norm over Steps (log scale)')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Gradient Norm')
+    ax.grid(True, alpha=0.3)
+    
+    # 7. Clip Ratio 플롯
+    # Clip Ratio: PPO/GRPO에서 업데이트가 클리핑된 비율
+    # - 0에 가까우면: 업데이트가 너무 작음 (학습 부족)
+    # - 1에 가까우면: 업데이트가 너무 큼 (불안정)
+    # - 0.1~0.3 정도가 이상적
+    ax = axes[6]
+    mask = ~np.isnan(metrics['clip_ratio_mean'])
+    ax.plot(np.array(steps)[mask], np.array(metrics['clip_ratio_mean'])[mask], 'brown', marker='o', markersize=3)
+    ax.set_title('Clip Ratio Mean over Steps')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Clip Ratio')
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim([0, 1])
+    
+    # 8. Loss vs Reward Scatter (보상이 있는 스텝만)
+    # Loss와 Reward의 상관관계:
+    # - 이상적으로는 음의 상관관계 (Loss↓, Reward↑)
+    # - 패턴이 없으면 학습이 제대로 안됨
+    # - 양의 상관관계면 뭔가 잘못됨
+    ax = axes[7]
+    loss_at_reward = []
+    reward_only = []
+    for i, (l, r) in enumerate(zip(metrics['loss'], metrics['reward'])):
+        if not np.isnan(r):
+            loss_at_reward.append(l)
+            reward_only.append(r)
+    if loss_at_reward:
+        ax.scatter(loss_at_reward, reward_only, c='purple', s=100, alpha=0.6)
+        ax.set_title('Loss vs Reward Correlation')
+        ax.set_xlabel('Loss')
+        ax.set_ylabel('Reward')
+        ax.grid(True, alpha=0.3)
+    
+    # 9. 학습 진행 상황 요약
+    # 전체 학습 진행 상황을 한눈에 볼 수 있는 요약 정보
+    ax = axes[8]
+    ax.axis('off')
+    summary_text = f"""Training Progress Summary
+    
+Total Steps: {len(steps)}
+Final Loss: {metrics['loss'][-1]:.4f}
+Final KL: {metrics['kl'][-1]:.4f}
+Final Entropy: {metrics['entropy'][-1]:.4f}
+
+Reward Progress:
+"""
+    for s, r in zip(reward_steps, reward_values):
+        summary_text += f"\n  Step {s}: {r:.4f}"
+    
+    if reward_values:
+        reward_improvement = reward_values[-1] - reward_values[0]
+        summary_text += f"\n\nReward Improvement: {reward_improvement:.4f}"
+        summary_text += f"\nAvg Reward: {np.mean(reward_values):.4f}"
+    
+    ax.text(0.1, 0.9, summary_text, transform=ax.transAxes, 
+            fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    
+    # 저장
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = os.path.join(save_dir, f'trajectory_plot_{timestamp}.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"📊 그래프 저장됨: {save_path}")
+    
+    # 보여주기
+    plt.show()
+
+def start_tensorboard(log_dir):
+    """텐서보드 시작"""
+    print("🚀 텐서보드 시작 중...")
+    cmd = f"tensorboard --logdir={log_dir}"
+    subprocess.Popen(cmd, shell=True)
+    print(f"✅ 텐서보드가 실행되었습니다: http://localhost:6006")
+
+
+
+
+
+
+
+
+def main():
+    # 기본 경로 또는 인자로 받은 경로
+    if len(sys.argv) > 1:
+        json_path = sys.argv[1]
+    else:
+        json_path = traj_path
+    
+    # 경로 확인
+    if not os.path.exists(json_path):
+        print(f"❌ 파일을 찾을 수 없습니다: {json_path}")
+        return
+    
+    print(f"📂 Trajectory 파일 로드 중: {json_path}")
+    
+    # 데이터 로드
+    data = load_trajectory(json_path)
+    print(f"✅ {len(data)}개의 스텝 데이터 로드 완료")
+    
+    # 저장 디렉토리
+    save_dir = os.path.dirname(json_path)
+    
+    finetuning_type = detect_training_type(data)
+    if finetuning_type == "GRPO":
+        plot_grpo_trajectories(data, save_dir)
+    if finetuning_type =='SFT':
+        plot_sft_trajectories(data, save_dir)
+
+    
+    # 텐서보드 시작 (로그 디렉토리가 있다면)
+    log_dir = "./logs"
+    if os.path.exists(log_dir):
+        start_tensorboard(log_dir)
+    else:
+        print(f"⚠️  텐서보드 로그 디렉토리를 찾을 수 없습니다: {log_dir}")
+    
+    print("\n💡 팁:")
+    print("- 그래프 창을 닫으면 프로그램이 종료됩니다")
+    print("- 텐서보드는 백그라운드에서 계속 실행됩니다")
+    print("- 텐서보드 종료: Ctrl+C 또는 터미널에서 'pkill tensorboard'")
+
+if __name__ == "__main__":
+    main()

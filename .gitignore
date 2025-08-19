@@ -7,7 +7,6 @@ check_dataset*
 .claude*/
 
 # Backup
-verl/
 
 # Logs
 logs/

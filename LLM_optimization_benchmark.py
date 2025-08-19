@@ -30,12 +30,13 @@ except:
     pass
 
 # 비교할 모델들 설정
-base_model_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # 기존 모델
-fine_model_id = "/Users/ai/llm_proj/finetune_DeepSeek-R1-Distill-Qwen-1.5B_SFT_LoRA_KOREAN_INSTRUCTION/checkpoint-100"  # 파인튜닝 모델
+#'trillionlabs/Tri-7B'
+base_model_id = 'openai/gpt-oss-20b' #"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # 기존 모델
+fine_model_id = "/Users/ai/llm_proj/finetune_gpt-oss-20b_SFT_LoRA_heegyu/CoT-collection-ko/checkpoint-1890"  # 파인튜닝 모델
 
 # 개별 실행 시 사용할 모델 (기본값)
 model_id = base_model_id
-data_count = 10  # 각 주제별 데이터 개수
+data_count = 20  # 각 주제별 데이터 개수
 
 
 # 사용자가 선택할 수 있는 최적화 기법들
@@ -113,7 +114,7 @@ SELECTED_OPTIMIZATIONS = ['pruning']
 # - Telecommunications: 정보통신 - 통신 이론과 네트워크
 
 # 벤치마크용 주제 선택 (수학, 과학, 코딩, 일반지능)
-data_subject = ["Economics"]
+data_subject = ["Math"]
 
 
 @dataclass
@@ -637,7 +638,7 @@ class LLMOptimizationBenchmark:
                                 model_answer = f"{best_match['choice']} (유사도 최고)"
                     
                     # 상세한 결과 출력
-                    print(f"\n    질문: {prompt.split('### 질문:')[1].split('### 선택지:')[0].strip()[:100]}...")
+                    print(f"\n    질문: {prompt.split('### 질문:')[1].split('### 선택지:')[0].strip()[:]}...")
                     
                     # 선택지 출력 (test_item에 choices가 있는 경우)
                     if test_item.get('choices'):
@@ -645,13 +646,14 @@ class LLMOptimizationBenchmark:
                         for choice_key, choice_text in test_item['choices'].items():
                             is_correct_choice = (choice_key == answer)
                             marker = "✓" if is_correct_choice else " "
-                            print(f"      {marker} {choice_key}) {choice_text[:60]}...")
+                            print(f"      {marker} {choice_key}) {choice_text[:]}...")
                     
                     # 모델 응답과 평가 결과
                     print(f"\n    정답: {answer}")
                     print(f"    모델 답변: {model_answer if model_answer else 'None (객관식 답변 추출 실패)'}")
-                    print(f"    전체 생성 텍스트: {generated_text[:100]}...")
+                    print(f"    전체 생성 텍스트: {generated_text[:]}")
                     print(f"    평가: {'✅ 정답' if is_correct else '❌ 오답'}")
+                    print(f"-"*60+"\n\n\n")
                     
                     # BLEU/ROUGE 점수 (주관식 평가인 경우)
                     if bleu_score > 0 or rouge_score > 0:
@@ -742,14 +744,35 @@ class LLMOptimizationBenchmark:
             print(f"\n[{model_label}] 모델 로드 중...")
             start_time = time.time()
             
-            tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
+            # Load tokenizer with proper handling for all models
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(self.model_id, trust_remote_code=True)
+                # Handle cases where tokenizer returns bool or other unexpected types
+                if not hasattr(tokenizer, 'encode') or isinstance(tokenizer, bool):
+                    print(f"특수 tokenizer 감지, LlamaTokenizer로 대체 시도...")
+                    from transformers import LlamaTokenizer
+                    tokenizer = LlamaTokenizer.from_pretrained(self.model_id)
+            except Exception as e:
+                print(f"Tokenizer 로드 실패: {e}, LlamaTokenizer 사용")
+                from transformers import LlamaTokenizer
+                tokenizer = LlamaTokenizer.from_pretrained(self.model_id)
+            
+            # Set pad token if needed
+            if hasattr(tokenizer, 'pad_token') and tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token if hasattr(tokenizer, 'eos_token') else tokenizer.eos_token_id
             
             # MXFP4를 bfloat16으로 fallback하도록 설정
+            # Mac(MPS)에서는 BFloat16 미지원, float32 사용
+            if torch.backends.mps.is_available():
+                dtype = torch.float32
+            elif torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+                dtype = torch.bfloat16
+            else:
+                dtype = torch.float32
+                
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_id,
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                torch_dtype=dtype,
                 device_map='auto' if torch.cuda.is_available() else 'cpu',  # GPU 있으면 자동 배치
                 ignore_mismatched_sizes=True,
                 trust_remote_code=True,
@@ -757,6 +780,12 @@ class LLMOptimizationBenchmark:
                 load_in_4bit=False,  # 4bit 로드 비활성화
                 load_in_8bit=False   # 8bit 로드 비활성화
             )
+            
+            # Mac/MPS에서 BFloat16 문제 해결: 모든 파라미터를 float32로 변환
+            if torch.backends.mps.is_available() or dtype == torch.float32:
+                print("📋 모델을 float32로 변환 중...")
+                model = model.float()  # 모든 파라미터를 float32로 변환
+                
             # Mac에서는 mps (Metal Performance Shaders) 사용
             # MPS 관련 에러 때문에 일단 비활성화
             if False and torch.backends.mps.is_available():
@@ -1012,8 +1041,23 @@ def run_comparison():
     os.makedirs(common_result_dir, exist_ok=True)
     print(f"\n📁 공통 결과 폴더: {common_result_dir}")
     
+    # 2. 파인튜닝 모델 벤치마크
+    print("\n\n\n\n" + "="*80)
+    print("2️⃣  파인튜닝 모델 벤치마크 시작")
+    print("="*80)
+    result_dir_fine, results_fine = run_single_model_benchmark(
+        fine_model_id, 
+        optimizations=[],  # 파인튜닝 모델 자체만 평가
+        model_type="finetuned",
+        result_dir=common_result_dir
+    )
+    results_summary['finetuned'] = {
+        'result_dir': result_dir_fine,
+        'model_id': fine_model_id
+    }
+
     # 1. 기존 모델 벤치마크
-    print("\n" + "="*80)
+    print("\n\n\n\n" + "="*80)
     print("1️⃣  기존 모델 벤치마크 시작")
     print("="*80)
     result_dir_base, results_base = run_single_model_benchmark(
@@ -1027,23 +1071,9 @@ def run_comparison():
         'model_id': base_model_id
     }
     
-    # 2. 파인튜닝 모델 벤치마크
-    print("\n" + "="*80)
-    print("2️⃣  파인튜닝 모델 벤치마크 시작")
-    print("="*80)
-    result_dir_fine, results_fine = run_single_model_benchmark(
-        fine_model_id, 
-        optimizations=[],  # 파인튜닝 모델 자체만 평가
-        model_type="finetuned",
-        result_dir=common_result_dir
-    )
-    results_summary['finetuned'] = {
-        'result_dir': result_dir_fine,
-        'model_id': fine_model_id
-    }
     
     # 3. 경량화된 파인튜닝 모델 벤치마크
-    print("\n" + "="*80)
+    print("\n\n\n\n" + "="*80)
     print("3️⃣  경량화된 파인튜닝 모델 벤치마크 시작")
     print("="*80)
     result_dir_quant, results_quant = run_single_model_benchmark(
@@ -1081,9 +1111,10 @@ def run_comparison():
                         result_key = model_type
                     elif model_type == 'lightweight':
                         # 경량화 모델은 적용된 최적화를 동적으로 찾음
+                        # 마지막으로 적용된 최적화 결과를 사용
                         for key in methods.keys():
-                            if key.startswith('lightweight:'):
-                                result_key = key
+                            if key.startswith('lightweight'):
+                                result_key = key  # 계속 업데이트하여 마지막 결과 사용
                                 break
                     
                     if result_key:

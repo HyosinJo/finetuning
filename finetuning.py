@@ -1,6 +1,26 @@
 import os
+import sys
+
+#리워드모델(답변품질) , 하이브리드 방식
+#GRPO 데이터셋으로 변경 KMMLU
+#파인튜닝 데이터셋 선정 리워드모델선정
+# 다양한 데이터 증강방식
+# 리워드모델 변경
+# 테스트 
+
+# lora 어댑터 moe에서 위치 확인
+# 학습 에포크,스탭나오게
+# 벤치마크 나오게
+# 모델 질문 응답 나오게
+
+# 로컬 TRL 경로를 Python path에 추가
+TRL_PATH = os.path.join(os.path.dirname(__file__), 'trl_finetune')
+if os.path.exists(TRL_PATH):
+    sys.path.insert(0, TRL_PATH)
+    print(f"✅ 로컬 TRL 사용: {TRL_PATH}")
+
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaTokenizer
 from datasets import load_dataset
 import numpy as np
 from datetime import datetime
@@ -14,30 +34,36 @@ load_dotenv()
 # W&B 비활성화
 os.environ["WANDB_DISABLED"] = "true"
 
-# Hugging Face 자동 로그인 
-from huggingface_hub import login
-try:
-    login(token=os.getenv('HF_TOKEN'))  
-    print("✅ Hugging Face 로그인 성공")
-except Exception as e:
-    print(f"⚠️ Hugging Face 로그인 실패: {e}")
-    print("환경변수 HF_TOKEN을 설정하거나 huggingface-cli login을 실행하세요.")
+# Hugging Face 토큰 설정
+HF_TOKEN = os.getenv('HF_TOKEN')
+if HF_TOKEN:
+    from huggingface_hub import login
+    try:
+        login(token=HF_TOKEN)  
+        print("✅ Hugging Face 로그인 성공")
+    except Exception as e:
+        print(f"⚠️ Hugging Face 로그인 실패: {e}")
+        print("환경변수 HF_TOKEN을 설정하거나 huggingface-cli login을 실행하세요.")
+else:
+    print("⚠️ HF_TOKEN이 설정되지 않았습니다. .env 파일에 HF_TOKEN을 추가하세요.")
+    HF_TOKEN = None
 
 # 설정 변수
 
 MODEL_ID = 'google/gemma-3-270m'
 MODEL_ID = "Qwen/Qwen1.5-MoE-A2.7B-Chat"
-MODEL_ID = "facebook/MobileLLM-600M"
 MODEL_ID = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-
+MODEL_ID = "facebook/MobileLLM-600M"
+MODEL_ID = "trillionlabs/Tri-7B"
+MODEL_ID = "openai/gpt-oss-20b"
 
 FINE_TUNE_FRAMEWORK = "trl"  # "trl" 또는 "verl (DAPO 인경우)" 선택
-METHOD = "GRPO"  # "SFT", "DPO", "GRPO", "PPO", "DAPO", "ORPO" 중 선택
+METHOD = "SFT"  # "SFT", "DPO", "GRPO", "PPO", "DAPO", "ORPO" 중 선택
 
 # 데이터셋 설정
+#DATASET_TYPE = "KMMLU"  
+#KMMLU_SUBJECT = "Economics"
 DATASET_TYPE = 'heegyu/CoT-collection-ko' #COT데이터셋
-DATASET_TYPE = "KMMLU"  
-KMMLU_SUBJECT = "Economics"
 
 # 현재 선택된 데이터셋 (방법에 따라 자동 선택됨)
 if DATASET_TYPE == "KMMLU":
@@ -50,9 +76,9 @@ else:
     elif METHOD == "DPO" or METHOD == "ORPO":
         DATASET_NAME = "maywell/ko_Ultrafeedback_binarized"  # DPO와 ORPO 둘 다 선호/비선호 쌍 필요
     elif METHOD == "DAPO":
-        DATASET_NAME = "markrAI/KoCommercial-Dataset"  # DAPO는 정답이 있는 데이터 필요
+        DATASET_NAME = "markrAI/KoCommercial-Dataset"  
     else:  # PPO, GRPO
-        DATASET_NAME = "kyujinpy/KOR-OpenOrca-Platypus-v3"
+        DATASET_NAME = "kyujinpy/KOR-OpenOrca-Platypus-v3" # 데이터셋에서 인스트럭트만 사용 -> 개선용 알고리즘
 
 
 
@@ -64,25 +90,25 @@ LORA_ALPHA = 32  # LoRA alpha
 LORA_DROPOUT = 0.1  # LoRA dropout
 
 
-
-# STF 학습 설정
-num_train_epochs=100 # 에포크
-SAVE_STEPS = 100  # 몇 스텝마다 저장할지
-MAX_STEPS = 5000  # 총 학습 스텝
-DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
-LEARNING_RATE = 5e-4  # LoRA는 더 높은 학습률 사용
- # GRPO의 num_generations = 10 로 나누어떨어지도록 수정
-BATCH_SIZE = 10 # VERL DAPO는 8의 배수 필요
-OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
-
 # GRPO 학습 설정
 num_batch_iteration=10
 SAVE_STEPS = 30  # 몇 스텝마다 저장할지
 MAX_STEPS = 5000  # 총 학습 스텝
 DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
-LEARNING_RATE = 5e-5  # LoRA는 더 높은 학습률 사용
- # GRPO의 num_generations = 10 로 나누어떨어지도록 수정
-BATCH_SIZE = 10 # VERL DAPO는 8의 배수 필요
+LEARNING_RATE = 5e-4
+GRPO_num_generation = 10 #oi
+BATCH_SIZE = 10
+OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
+
+
+
+# STF 학습 설정
+num_train_epochs=100 # 에포크
+SAVE_STEPS = 30  # 몇 스텝마다 저장할지
+MAX_STEPS = 3000000  # 총 학습 스텝
+DATA_SIZE = 100  # 사용할 데이터 개수 (파인튜닝에 적합한 크기 필요)
+LEARNING_RATE = 5e-4  # LoRA는 더 높은 학습률 사용
+BATCH_SIZE = 10
 OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else 'Full'}_{DATASET_TYPE}"
 
 
@@ -90,7 +116,6 @@ OUTPUT_DIR = f"finetune_{MODEL_ID.split('/')[-1]}_{METHOD}_{'QLoRA' if USE_QLORA
 # SFT: markrAI/KoCommercial-Dataset (상업용 한국어 instruction 데이터셋)
 # DPO: maywell/ko_Ultrafeedback_binarized (선호/비선호 쌍이 있는 한국어 데이터셋)
 # PPO/GRPO: kyujinpy/KOR-OpenOrca-Platypus-v3 (고품질 한국어 instruction)
-
 
 
 # KMMLU 데이터 준비 함수들
@@ -101,8 +126,19 @@ def prepare_kmmlu_for_sft():
     print(f"\n📊 KMMLU 데이터 로드 중 - 주제: {KMMLU_SUBJECT}")
     
     try:
+        # 전체 데이터셋 크기 확인
+        train_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="train")
+        dev_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="dev")
+        test_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="test")
+        
+        print(f"📈 {KMMLU_SUBJECT} 전체 데이터 통계:")
+        print(f"   - Train: {len(train_full)}개")
+        print(f"   - Dev: {len(dev_full)}개")
+        print(f"   - Test: {len(test_full)}개")
+        print(f"   - 총합: {len(train_full) + len(dev_full) + len(test_full)}개")
+        
         # 특정 주제에서만 데이터 가져오기
-        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"test[:{DATA_SIZE}]")
+        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"train[:{DATA_SIZE}]")
         
         for item in dataset:
             all_data.append({
@@ -165,8 +201,19 @@ def prepare_kmmlu_for_dpo():
     print(f"\n📊 KMMLU DPO 데이터 로드 중 - 주제: {KMMLU_SUBJECT}")
     
     try:
+        # 전체 데이터셋 크기 확인
+        train_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="train")
+        dev_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="dev")
+        test_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="test")
+        
+        print(f"📈 {KMMLU_SUBJECT} 전체 데이터 통계:")
+        print(f"   - Train: {len(train_full)}개")
+        print(f"   - Dev: {len(dev_full)}개")
+        print(f"   - Test: {len(test_full)}개")
+        print(f"   - 총합: {len(train_full) + len(dev_full) + len(test_full)}개")
+        
         # 특정 주제에서만 데이터 가져오기
-        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"test[:{DATA_SIZE}]")
+        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"train[:{DATA_SIZE}]")
         
         for item in dataset:
             question = item['question']
@@ -222,8 +269,19 @@ def prepare_kmmlu_for_rlhf():
     print(f"\n📊 KMMLU RLHF 데이터 로드 중 - 주제: {KMMLU_SUBJECT}")
     
     try:
+        # 전체 데이터셋 크기 확인
+        train_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="train")
+        dev_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="dev")
+        test_full = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split="test")
+        
+        print(f"📈 {KMMLU_SUBJECT} 전체 데이터 통계:")
+        print(f"   - Train: {len(train_full)}개")
+        print(f"   - Dev: {len(dev_full)}개")
+        print(f"   - Test: {len(test_full)}개")
+        print(f"   - 총합: {len(train_full) + len(dev_full) + len(test_full)}개")
+        
         # 특정 주제에서만 데이터 가져오기
-        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"test[:{DATA_SIZE}]")
+        dataset = load_dataset("HAERAE-HUB/KMMLU", KMMLU_SUBJECT, split=f"train[:{DATA_SIZE}]")
         
         for item in dataset:
             all_data.append({
@@ -257,7 +315,7 @@ def prepare_kmmlu_for_rlhf():
             prompt += f"B) {choices[1]}\n"
             prompt += f"C) {choices[2]}\n"
             prompt += f"D) {choices[3]}\n"
-            prompt += "답을 고르세요:"
+            prompt += "정답을 고르세요:"
             prompts.append(prompt)
         return {"prompt": prompts, "answer": examples['answer']}
     
@@ -287,8 +345,19 @@ def prepare_kmmlu_for_rlhf():
 # 한국어 지시 따르기 데이터 준비 함수들
 def prepare_korean_instruction_for_sft():
     """SFT용 한국어 지시 따르기 데이터 준비"""
-    # markrAI/KoCommercial-Dataset 사용
+    print(f"\n📊 한국어 SFT 데이터 로드 중...")
+    
+    # 전체 데이터셋 크기 확인
+    full_dataset = load_dataset("markrAI/KoCommercial-Dataset", split="train")
+    total_size = len(full_dataset)
+    
+    # 지정된 크기만큼 데이터 로드
     dataset = load_dataset("markrAI/KoCommercial-Dataset", split=f"train[:{DATA_SIZE}]")
+    
+    print(f"📈 markrAI/KoCommercial-Dataset 데이터 통계:")
+    print(f"   - 전체 데이터: {total_size}개")
+    print(f"   - 로드된 데이터: {len(dataset)}개")
+    print(f"   - 사용 비율: {len(dataset)/total_size*100:.1f}%")
     
     def preprocess(examples):
         texts = []
@@ -305,7 +374,17 @@ def prepare_korean_instruction_for_sft():
             texts.append(text)
         return {"text": texts}
     
-    return dataset.map(preprocess, batched=True)
+    processed_dataset = dataset.map(preprocess, batched=True)
+    
+    # 데이터 샘플 출력
+    print("\n📋 SFT 데이터 샘플:")
+    print("="*80)
+    for i in range(min(3, len(processed_dataset))):
+        print(f"\n[샘플 {i+1}]")
+        print(processed_dataset[i]['text'][:500] + "..." if len(processed_dataset[i]['text']) > 500 else processed_dataset[i]['text'])
+    print("="*80)
+    
+    return processed_dataset
 
 def prepare_korean_instruction_for_dpo():
     """DPO용 한국어 지시 따르기 데이터 준비 - 선호/비선호 쌍 생성"""
@@ -427,6 +506,15 @@ def prepare_korean_instruction_for_dapo():
 
 
 
+
+
+
+
+
+
+
+
+
 # SFT 방식 파인튜닝 (Supervised Fine-Tuning)
 def train_sft():
     from trl import SFTTrainer, SFTConfig
@@ -446,17 +534,51 @@ def train_sft():
         )
     
     # 모델과 토크나이저 로드
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        quantization_config=bnb_config if USE_QLORA else None,
-        torch_dtype=torch.float32 if not USE_QLORA else None,
-        device_map="auto",
-        trust_remote_code=True
-    )
+    if MODEL_ID == "openai/gpt-oss-20b":
+        # Config 먼저 로드하여 quantization_config 문제 해결
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            trust_remote_code=True
+        )
+        
+        # quantization_config가 None이면 빈 dict로 설정
+        if hasattr(config, 'quantization_config') and config.quantization_config is None:
+            print("⚠️ quantization_config가 None입니다. 빈 dict로 설정...")
+            config.quantization_config = {}
+        
+        # 수정된 config로 모델 로드
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            trust_remote_code=True,
+            config=config,
+            quantization_config=bnb_config if USE_QLORA else None,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,  # GPU면 bf16, CPU면 fp32
+            device_map="auto",
+            low_cpu_mem_usage=True,  # 메모리 효율적 로딩 (meta tensor 방지)
+            offload_folder="offload",  # GPU 메모리 부족시 일부를 디스크에 저장
+            offload_state_dict=True  # state dict를 디스크에 오프로드
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            quantization_config=bnb_config if USE_QLORA else None,
+            torch_dtype=torch.float32 if not USE_QLORA else None,
+            device_map="auto",
+            trust_remote_code=True,
+            token=HF_TOKEN
+        )
     
     # QLoRA 준비
     if USE_QLORA:
         model = prepare_model_for_kbit_training(model)
+    
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
     
     # LoRA 설정
     if USE_LORA or USE_QLORA:
@@ -471,7 +593,19 @@ def train_sft():
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
     
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 LlamaTokenizer 직접 사용
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    else:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        except Exception as e:
+            if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+            else:
+                raise e
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -499,16 +633,159 @@ def train_sft():
         logging_dir="./logs",     
     )
     
+    # SFT용 콜백 클래스 - 학습 진행 상황 출력
+    from transformers import TrainerCallback
+    import pickle
+    
+    class SFTProgressCallback(TrainerCallback):
+        def __init__(self, tokenizer, dataset, model=None):
+            self.tokenizer = tokenizer
+            self.dataset = dataset
+            self.model = model  # 모델 참조 추가
+            self.step_count = 0
+            self.trajectories = []  # Trajectory 저장용
+            
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            if logs is not None and state.global_step > 0:
+                # Trajectory 수집 (매 로그마다 - 모든 정보 저장)
+                if state.log_history:
+                    latest_log = state.log_history[-1]
+                    
+                    # 모든 로그 정보를 그대로 저장
+                    trajectory = {
+                        'step': state.global_step,
+                        'epoch': state.epoch,
+                        **latest_log  # 모든 로그 정보를 그대로 포함
+                    }
+                    
+                    # GPU 메모리 정보 추가
+                    if torch.cuda.is_available():
+                        trajectory['gpu_memory_allocated'] = torch.cuda.memory_allocated() / 1024**3
+                        trajectory['gpu_memory_reserved'] = torch.cuda.memory_reserved() / 1024**3
+                    
+                    self.trajectories.append(trajectory)
+                
+                # 10 스텝마다 현재 학습 중인 데이터 샘플 출력
+                if state.global_step % 10 == 0:
+                    self.step_count += 1
+                    # 현재 에포크 내에서의 샘플 인덱스 계산
+                    samples_per_epoch = len(self.dataset)
+                    samples_processed_total = state.global_step * args.per_device_train_batch_size
+                    current_idx = samples_processed_total % samples_per_epoch
+                    
+                    print(f"\n{'='*100}")
+                    print(f"🎯 Step: {state.global_step} | Epoch: {state.epoch:.2f}")
+                    print(f"📊 Loss: {logs.get('loss', 'N/A'):.4f} | Learning Rate: {logs.get('learning_rate', 'N/A'):.2e}")
+                    
+                    # GPU 메모리 정보 출력
+                    if torch.cuda.is_available():
+                        gpu_memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+                        gpu_memory_reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+                        print(f"💾 GPU 메모리: {gpu_memory_allocated:.2f}GB / {gpu_memory_reserved:.2f}GB (할당/예약)")
+                    
+                    # 현재 학습 중인 데이터 샘플 출력
+                    if current_idx < len(self.dataset):
+                        sample = self.dataset[current_idx]
+                        sample_text = sample.get('text', '')
+                        
+                        # 지시문과 응답 분리
+                        if "### 지시:" in sample_text and "### 응답:" in sample_text:
+                            parts = sample_text.split("### 응답:")
+                            instruction = parts[0].replace("### 지시:", "").strip()
+                            response = parts[1].strip() if len(parts) > 1 else "N/A"
+                            
+                            print(f"\n📝 현재 학습 데이터 (인덱스: {current_idx}):")
+                            print(f"📌 질문: {instruction[:200]}..." if len(instruction) > 200 else f"📌 질문: {instruction}")
+                            print(f"✅ 정답: {response[:200]}..." if len(response) > 200 else f"✅ 정답: {response}")
+                            
+                            # Loss 기반 학습 품질 표시 (보상 대신)
+                            current_loss = logs.get('loss', 0)
+                            if current_loss < 1.0:
+                                quality = "🟢 매우 좋음"
+                            elif current_loss < 2.0:
+                                quality = "🟡 좋음"
+                            elif current_loss < 3.0:
+                                quality = "🟠 보통"
+                            else:
+                                quality = "🔴 개선 필요"
+                            print(f"📈 학습 품질: {quality} (Loss: {current_loss:.4f})")
+                        else:
+                            print(f"\n📝 현재 학습 데이터 (인덱스: {current_idx}):")
+                            print(f"{sample_text[:400]}..." if len(sample_text) > 400 else sample_text)
+                    
+                    print("="*100)
+        
+        def on_save(self, args, state, control, **kwargs):
+            # 체크포인트 저장 시 trajectory도 저장
+            save_path = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            traj_path = os.path.join(save_path, "trajectories.pkl")
+            
+            # 디렉토리 생성
+            os.makedirs(save_path, exist_ok=True)
+            
+            # Trajectory 저장
+            with open(traj_path, 'wb') as f:
+                pickle.dump(self.trajectories, f)
+            print(f"💾 SFT Trajectory 저장됨: {traj_path}")
+            
+            # JSON 형식으로도 저장 (읽기 쉽게)
+            import json
+            json_path = os.path.join(save_path, "trajectories.json")
+            # 모든 필드를 JSON으로 저장 (직렬화 가능한 것만)
+            json_trajectories = []
+            for traj in self.trajectories:
+                json_traj = {}
+                for k, v in traj.items():
+                    try:
+                        # JSON 직렬화 테스트
+                        json.dumps(v)
+                        json_traj[k] = v
+                    except:
+                        # 직렬화 불가능한 경우 str 변환
+                        json_traj[k] = str(v) if v is not None else None
+                json_trajectories.append(json_traj)
+            
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(json_trajectories, f, indent=2, ensure_ascii=False)
+    
     # SFT 트레이너
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
         processing_class=tokenizer,
+        callbacks=[SFTProgressCallback(tokenizer, dataset)]  # 콜백 추가
     )
     
     # 학습
     trainer.train()
+    
+    # 최종 trajectory 저장 (SFT 콜백에서 가져오기)
+    for callback in trainer.callback_handler.callbacks:
+        if isinstance(callback, SFTProgressCallback):
+            final_traj_path = os.path.join(OUTPUT_DIR, "final", "trajectories.pkl")
+            os.makedirs(os.path.join(OUTPUT_DIR, "final"), exist_ok=True)
+            with open(final_traj_path, 'wb') as f:
+                pickle.dump(callback.trajectories, f)
+            print(f"💾 최종 SFT Trajectory 저장됨: {final_traj_path}")
+            
+            # JSON 형식으로도 저장
+            json_path = os.path.join(OUTPUT_DIR, "final", "trajectories.json")
+            json_trajectories = []
+            for traj in callback.trajectories:
+                json_traj = {}
+                for k, v in traj.items():
+                    try:
+                        json.dumps(v)
+                        json_traj[k] = v
+                    except:
+                        json_traj[k] = str(v) if v is not None else None
+                json_trajectories.append(json_traj)
+            
+            import json
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(json_trajectories, f, indent=2, ensure_ascii=False)
+            break
     
     # 최종 모델 저장
     trainer.save_model(f"{OUTPUT_DIR}/final")
@@ -538,7 +815,8 @@ def train_dpo():
         quantization_config=bnb_config if USE_QLORA else None,
         torch_dtype=torch.float32 if not USE_QLORA else None,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        token=HF_TOKEN
     )
     
     # 참조 모델은 LoRA/QLoRA 사용 시 None (자동 처리됨)
@@ -548,12 +826,18 @@ def train_dpo():
             MODEL_ID,
             torch_dtype=torch.float32,
             device_map="auto",
-            trust_remote_code=True
+            trust_remote_code=True,
+            token=HF_TOKEN
         )
     
     # QLoRA 준비
     if USE_QLORA:
         model = prepare_model_for_kbit_training(model)
+    
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
     
     # LoRA 설정
     if USE_LORA or USE_QLORA:
@@ -568,7 +852,19 @@ def train_dpo():
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
     
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 LlamaTokenizer 직접 사용
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    else:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        except Exception as e:
+            if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+            else:
+                raise e
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -638,12 +934,18 @@ def train_orpo():
         quantization_config=bnb_config if USE_QLORA else None,
         torch_dtype=torch.float32 if not USE_QLORA else None,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        token=HF_TOKEN
     )
     
     # QLoRA 준비
     if USE_QLORA:
         model = prepare_model_for_kbit_training(model)
+    
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
     
     # LoRA 설정
     if USE_LORA or USE_QLORA:
@@ -658,7 +960,19 @@ def train_orpo():
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
     
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 LlamaTokenizer 직접 사용
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    else:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        except Exception as e:
+            if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+            else:
+                raise e
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -705,9 +1019,30 @@ def train_grpo():
     print("🚀 GRPO 파인튜닝 시작 (TRL 내장)...")
     
     # 토크나이저 로드
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 LlamaTokenizer 직접 사용
+        print("🦙 MobileLLM 모델 감지 - LlamaTokenizer 사용")
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    else:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        except Exception as e:
+            if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+            else:
+                raise e
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    
+    # token_type_ids 제거 설정
+    # token_type_ids는 BERT 계열 모델에서 문장 구분을 위해 사용되는 파라미터
+    # GPT/Llama 계열 모델(Qwen, DeepSeek 등)에서는 사용하지 않음
+    # 하지만 일부 토크나이저가 이를 자동으로 생성해서 generate() 함수에서 오류 발생
+    # 따라서 model_input_names에서 제거하여 토크나이저가 이를 생성하지 않도록 함
+    if hasattr(tokenizer, 'model_input_names') and 'token_type_ids' in tokenizer.model_input_names:
+        tokenizer.model_input_names.remove('token_type_ids')
     
     # 데이터셋 준비
     if DATASET_TYPE == "KMMLU":
@@ -720,7 +1055,12 @@ def train_grpo():
     try:
         from transformers import AutoModelForSequenceClassification
         # 다국어 지원 보상 모델 사용
-        reward_model_name = "OpenAssistant/reward-model-deberta-v3-large-v2"
+        #reward_model_name = "OpenAssistant/reward-model-deberta-v3-large-v2"
+        reward_model_name = "gaotang/RM-R1-DeepSeek-Distilled-Qwen-7B" # rm r1 추론 보상 모델
+        reward_model_name = "heegyu/ko-reward-model-1.3b-v0.1" # 한글 리워드 모델
+        reward_model_name = "heegyu/ko-reward-model-safety-1.3b-v0.2" # 한글리워드 2 
+        reward_model_name = "heegyu/ko-reward-model-helpful-1.3b-v0.2" # 한글리워드 3 유용한 답변에 점수
+
         # MPS에서는 CPU로 로드
         if torch.backends.mps.is_available():
             reward_model = AutoModelForSequenceClassification.from_pretrained(
@@ -769,14 +1109,20 @@ def train_grpo():
         elif not isinstance(prompts, list):
             prompts = [prompts] * len(completions)
         
+        # 실시간 로그 출력 헤더 (첫 번째 배치만)
+        if len(completions) > 0:
+            print("\n" + "="*100)
+            print("🔍 보상 계산 시작 - 배치 크기:", len(completions))
+            print("="*100)
+        
         for i, (completion, answer_idx) in enumerate(zip(completions, answers)):
             completion_text = completion.strip()
-            
             # 보상 모델이 있는 경우
-            if 'reward_model' in locals() and reward_model is not None:
+            if reward_model is not None:
+                print('reward model 보상 평가 시작')
                 try:
-                    # 전체 대화 컨텍스트 구성
-                    full_text = f"{prompts[i]}\n{completion_text}"
+                    # 보상모델이 평가할 품질 데이터 (질문지,모델의 응답)
+                    full_text = f"질문 : {prompts[i]}\n 모델 응답 : {completion_text}"
                     
                     # 보상 모델로 품질 평가
                     inputs = reward_tokenizer(
@@ -786,13 +1132,28 @@ def train_grpo():
                         max_length=512
                     )
                     
-                    # MPS에서는 CPU로 이동
-                    if torch.backends.mps.is_available():
-                        inputs = {k: v.to('cpu') for k, v in inputs.items()}
+                    # 보상 모델의 디바이스로 이동
+                    if hasattr(reward_model, 'device'):
+                        device = reward_model.device
+                    else:
+                        # 모델의 첫 번째 파라미터의 디바이스 확인
+                        device = next(reward_model.parameters()).device
+                    
+                    inputs = {k: v.to(device) for k, v in inputs.items()}
                     
                     with torch.no_grad():
                         outputs = reward_model(**inputs)
-                        quality_score = outputs.logits[0].item()  # 품질 점수
+                        # logits 차원 처리
+                        if hasattr(outputs, 'logits'):
+                            logits = outputs.logits
+                            if logits.dim() == 2:  # [batch_size, num_classes]
+                                quality_score = logits[0, 0].item()  # 첫 번째 클래스 점수
+                            elif logits.dim() == 1:  # [num_classes]
+                                quality_score = logits[0].item()
+                            else:
+                                quality_score = logits.item()  # 스칼라
+                        else:
+                            quality_score = outputs[0].item() if hasattr(outputs[0], 'item') else float(outputs[0])
                     
                     # 정답 여부 확인 (A,B,C,D 추출)
                     import re
@@ -816,12 +1177,24 @@ def train_grpo():
                     if extracted_answer == correct_answer:
                         # 정답: 품질 점수 + 보너스
                         reward = quality_score + 1
+                        is_correct = "✅ 정답"
                     elif extracted_answer:
                         # 답은했지만 틀린경우: 품질 점수 - 페널티
                         reward = quality_score - 1
+                        is_correct = f"❌ 오답 (선택: {extracted_answer}, 정답: {correct_answer})"
                     else:
-                        # 형식도 틀리고 답도 틀린경우: 품질 점수만
+                        # 품질도 안좋고 답도 틀린경우: 추가 패널티
                         reward = quality_score - 1.5
+                        is_correct = f"⚠️ 응답 품질 저하 (정답: {correct_answer})"
+                    
+                    # 실시간 로그 출력
+                    print(f"\n[샘플 {i+1}]")
+                    print(f"📝 문제: {prompts[i][:100]}...")
+                    print(f"💬 응답: {completion_text[:200]}...")
+                    print(f"📊 보상모델의 점수: {quality_score:.4f}")
+                    print(f"🎯 정답 체크: {is_correct}")
+                    print(f"🏆 최종 보상: {reward:.4f}")
+                    print("-" * 80)
                     
                 except Exception as e:
                     print(f"보상 계산 오류: {e}")
@@ -838,12 +1211,39 @@ def train_grpo():
                     # 응답과 각 선택지의 유사도 계산
                     response_emb = embedder.encode([completion_text])
                     
-                    # 간단히 정답 여부만 확인 (실제로는 선택지 텍스트와 비교해야 함)
+                    # 엄격한 답안 추출
                     import re
-                    if re.search(rf'\b{correct_letter}\b', completion_text.upper()):
+                    extracted_answer = None
+                    patterns = [
+                        r'^([A-D])[).\s]?',
+                        r'(?:답|정답|선택)(?:은|는)?\s*[:\s]?\s*([A-D])',
+                        r'([A-D])\s*(?:번|입니다|이다|임)',
+                    ]
+                    
+                    for pattern in patterns:
+                        match = re.search(pattern, completion_text.upper())
+                        if match:
+                            extracted_answer = match.group(1)
+                            break
+                    
+                    # 정답 체크
+                    if extracted_answer == correct_letter:
                         reward = 1.0
-                    else:
+                        is_correct = f"✅ 정답 (임베딩 기반)"
+                    elif extracted_answer:
                         reward = -0.5
+                        is_correct = f"❌ 오답 (임베딩 기반, 선택: {extracted_answer}, 정답: {correct_letter})"
+                    else:
+                        reward = -1.0
+                        is_correct = f"⚠️ 형식 오류 (임베딩 기반, 정답: {correct_letter})"
+                    
+                    # 실시간 로그 출력
+                    print(f"\n[샘플 {i+1}]")
+                    print(f"📝 문제: {prompts[i]}")
+                    print(f"💬 응답: {completion_text[:]}")
+                    print(f"🎯 정답 체크: {is_correct}")
+                    print(f"🏆 최종 보상: {reward:.4f}")
+                    print("-" * 80)
                         
                 except Exception as e:
                     print(f"임베딩 계산 오류: {e}")
@@ -853,14 +1253,118 @@ def train_grpo():
                 # 기본 규칙 기반 (폴백의 폴백)
                 import re
                 # KMMLU는 1-indexed (1,2,3,4)이므로 0-indexed로 변환
-                if re.search(rf'\b{["A", "B", "C", "D"][answer_idx - 1]}\b', completion_text.upper()):
+                correct_answer = ['A', 'B', 'C', 'D'][answer_idx - 1]
+                
+                # 엄격한 답안 추출 패턴
+                extracted_answer = None
+                patterns = [
+                    r'^([A-D])[).\s]?',  # 문장 시작 부분의 A), A., A 등
+                    r'(?:답|정답|선택)(?:은|는)?\s*[:\s]?\s*([A-D])',  # 답은 A, 정답: B 등
+                    r'([A-D])\s*(?:번|입니다|이다|임)',  # A번, A입니다 등
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, completion_text.upper())
+                    if match:
+                        extracted_answer = match.group(1)
+                        break
+                
+                # 정답 체크
+                if extracted_answer == correct_answer:
                     reward = 1.0
-                else:
+                    is_correct = f"✅ 정답 (규칙 기반)"
+                elif extracted_answer:
                     reward = -1.0
+                    is_correct = f"❌ 오답 (규칙 기반, 선택: {extracted_answer}, 정답: {correct_answer})"
+                else:
+                    reward = -1.5
+                    is_correct = f"⚠️ 형식 오류 (규칙 기반, 정답: {correct_answer})"
+                
+                # 실시간 로그 출력
+                print(f"\n[샘플 {i+1}]")
+                print(f"📝 문제: {prompts[i][:100]}...")
+                print(f"💬 응답: {completion_text[:200]}...")
+                print(f"🎯 정답 체크: {is_correct}")
+                print(f"🏆 최종 보상: {reward:.4f}")
+                print("-" * 80)
             
             rewards.append(reward)
         
         return rewards
+    
+    # GPU 감지 및 DeepSpeed 자동 설정 (엘리스에서는 비활성화)
+    deepspeed_config = None
+    if torch.cuda.is_available() and False:  # 엘리스에서는 DeepSpeed 비활성화
+        print("🚀 GPU 감지됨! DeepSpeed 자동 활성화")
+        
+        # GPU 메모리에 따라 ZeRO stage 자동 선택
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB 단위
+        
+        if gpu_memory < 8:  # 8GB 미만
+            zero_stage = 3  # 최대 메모리 절약
+            offload_optimizer = True
+            offload_param = True
+            print(f"💾 GPU 메모리 {gpu_memory:.1f}GB - ZeRO Stage 3 + CPU 오프로딩 사용")
+        elif gpu_memory < 16:  # 16GB 미만
+            zero_stage = 2
+            offload_optimizer = True
+            offload_param = False
+            print(f"💾 GPU 메모리 {gpu_memory:.1f}GB - ZeRO Stage 2 + 옵티마이저 오프로딩 사용")
+        else:  # 16GB 이상
+            zero_stage = 1
+            offload_optimizer = False
+            offload_param = False
+            print(f"💾 GPU 메모리 {gpu_memory:.1f}GB - ZeRO Stage 1 사용")
+        
+        # bf16과 fp16 중 하나만 선택
+        use_bf16 = torch.cuda.is_bf16_supported()
+        
+        deepspeed_config = {
+            "train_batch_size": BATCH_SIZE,
+            "gradient_accumulation_steps": 1,
+            "fp16": {
+                "enabled": not use_bf16,  # bf16이 지원되지 않을 때만 fp16 사용
+                "auto_cast": False,
+                "loss_scale": 0,
+                "initial_scale_power": 16,
+                "loss_scale_window": 1000,
+                "hysteresis": 2,
+                "consecutive_hysteresis": False,
+                "min_loss_scale": 1
+            },
+            "bf16": {
+                "enabled": use_bf16  # bf16이 지원되면 bf16 사용
+            },
+            "zero_optimization": {
+                "stage": zero_stage,
+                "offload_optimizer": {
+                    "device": "cpu" if offload_optimizer else "none",
+                    "pin_memory": True
+                } if offload_optimizer else {},
+                "offload_param": {
+                    "device": "cpu" if offload_param else "none",
+                    "pin_memory": True
+                } if offload_param else {},
+                "overlap_comm": True,
+                "contiguous_gradients": True,
+                "sub_group_size": 1e9,
+                "reduce_bucket_size": "auto",
+                "stage3_prefetch_bucket_size": "auto",
+                "stage3_param_persistence_threshold": "auto",
+                "stage3_max_live_parameters": 1e9,
+                "stage3_max_reuse_distance": 1e9,
+                "stage3_gather_16bit_weights_on_model_save": True
+            },
+            "gradient_clipping": 1.0,
+            "steps_per_print": 10,
+            "wall_clock_breakdown": False
+        }
+        
+        # DeepSpeed 설정 파일 저장
+        import json
+        with open("ds_config.json", "w") as f:
+            json.dump(deepspeed_config, f, indent=2)
+        print("✅ DeepSpeed 설정 파일 저장됨: ds_config.json")
     
     # GRPO 설정
     grpo_config = GRPOConfig(
@@ -868,19 +1372,23 @@ def train_grpo():
         per_device_train_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=1,
         num_iterations=num_batch_iteration,  # 각 배치당 반복 횟수
-        epsilon=0.2,  # 클리핑 값
+        epsilon=0.2,  # surr loss 클리핑 값
         save_steps=SAVE_STEPS,
         output_dir=OUTPUT_DIR,
-        max_completion_length=128,  # max_new_tokens 대신 max_completion_length 사용
-        max_prompt_length=512,  # 프롬프트 최대 길이
-        num_generations=10,  # 각 프롬프트당 생성할 응답 수
+        max_completion_length=128,  # max_new_tokens 대신 max_completion_length 사용 (응답 외대)
+        max_prompt_length=1024,  # 프롬프트 최대 길이 (질문 최대)
+        num_generations=GRPO_num_generation,  # 각 프롬프트당 생성할 응답 수
         temperature=1.0,  # 생성 온도
         beta=0.1,  # KL 페널티 계수
-        logging_steps=1,
-        bf16=False,  # macOS에서는 bf16 비활성화
-        fp16=False,  # fp16도 비활성화
+        logging_steps=1, 
+        bf16=torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False,  # GPU가 지원하면 자동 활성화
+        fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),  # bf16 미지원시 fp16 사용
         report_to="tensorboard",  # 텐서보드 로그
-        logging_dir="./logs",     
+        logging_dir="./logs",
+        deepspeed=deepspeed_config,  # DeepSpeed 설정 추가 (GPU 있을 때만)
+        importance_sampling_level="token",  # 중요도 샘플링 수준: "token" 또는 "sequence"
+        scale_rewards=True,  # 보상 정규화 여부 (표준편차로 나누기)
+        use_liger_loss=False,  # Liger 커널 사용 여부 (GPU 최적화, token-level만 지원)
     )
     
     # Trajectory 저장을 위한 콜백 클래스
@@ -892,6 +1400,10 @@ def train_grpo():
             self.trajectories = []
             
         def on_step_end(self, args, state, control, **kwargs):
+            # 10스텝마다 GPU 메모리 사용량 출력
+            if state.global_step % 10 == 0:
+                print_gpu_memory()
+            
             # 매 스텝마다 trajectory 수집
             # state.log_history에서 최신 로그 가져오기
             if state.log_history:
@@ -959,9 +1471,133 @@ def train_grpo():
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(json_trajectories, f, indent=2, ensure_ascii=False)
     
+    # GPU 메모리 모니터링 함수
+    def print_gpu_memory():
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                print(f"\n🎮 GPU {i} ({torch.cuda.get_device_name(i)}) 메모리 사용량:")
+                print(f"   할당됨: {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
+                print(f"   예약됨: {torch.cuda.memory_reserved(i) / 1024**3:.2f} GB")
+                print(f"   전체: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.2f} GB")
+                print(f"   사용률: {(torch.cuda.memory_allocated(i) / torch.cuda.get_device_properties(i).total_memory) * 100:.1f}%")
+    
+    # 모델 로드 (MobileLLM 등 커스텀 모델 지원)
+    print(f"🤖 모델 로드 중... ({'QLoRA' if USE_QLORA else 'LoRA' if USE_LORA else '풀 파인튜닝'})")
+    
+    from transformers import BitsAndBytesConfig
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    
+    # QLoRA 설정
+    bnb_config = None
+    if USE_QLORA:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        )
+    
+    if "MobileLLM" in MODEL_ID:
+        # MobileLLM은 trust_remote_code 필요
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            trust_remote_code=True,
+            quantization_config=bnb_config if USE_QLORA else None,
+            torch_dtype=torch.float32 if not USE_QLORA else None,
+            device_map="auto"
+        )
+    else:
+        # Config 먼저 로드하여 quantization_config 문제 해결
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN,
+            trust_remote_code=True
+        )
+        
+        # quantization_config가 None이면 빈 dict로 설정
+        if hasattr(config, 'quantization_config') and config.quantization_config is None:
+            print("⚠️ quantization_config가 None입니다. 빈 dict로 설정...")
+            config.quantization_config = {}
+        
+        # 수정된 config로 모델 로드
+        # 환경에 따라 다른 설정 사용
+        if torch.backends.mps.is_available():
+            # Mac 환경
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID,
+                token=HF_TOKEN,
+                trust_remote_code=True,
+                config=config,
+                quantization_config=bnb_config if USE_QLORA else None,
+                torch_dtype=torch.float32,  # Mac에서는 항상 float32
+                device_map="cpu",  # CPU 명시적 지정
+                low_cpu_mem_usage=True  # 메모리 효율적 로딩
+            )
+        else:
+            # GPU 환경 (엘리스 등)
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID,
+                token=HF_TOKEN,
+                trust_remote_code=True,
+                config=config,
+                quantization_config=bnb_config if USE_QLORA else None,
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto",
+                low_cpu_mem_usage=True
+            )
+    
+    # QLoRA 준비
+    if USE_QLORA:
+        model = prepare_model_for_kbit_training(model)
+    
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
+    
+    # LoRA 설정
+    if USE_LORA or USE_QLORA:
+        lora_config = LoraConfig(
+            r=LORA_R,
+            lora_alpha=LORA_ALPHA,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            lora_dropout=LORA_DROPOUT,
+            bias="none",
+            task_type="CAUSAL_LM"
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+    
+    # Mac/MPS에서 BFloat16 문제 해결
+    if torch.backends.mps.is_available():
+        print("📋 Mac 환경 감지 - 모델을 float32로 변환 중...")
+        model = model.float()
+    
+    # 모델 로드 후 GPU 메모리 사용량 출력
+    print("\n📊 모델 로드 완료!")
+    print_gpu_memory()
+    
+    # 생성 전 디버깅
+    print("\n🔍 테스트 생성 시작...")
+    test_prompt = "문제: 한국의 수도는? A) 서울 B) 부산 C) 대구 D) 인천\n정답을 고르세요:"
+    test_inputs = tokenizer(test_prompt, return_tensors="pt").to(model.device)
+    print(f"입력 토큰 수: {test_inputs['input_ids'].shape}")
+    
+    with torch.no_grad():
+        test_output = model.generate(
+            **test_inputs,
+            max_new_tokens=20,
+            do_sample=False,
+            temperature=0.7
+        )
+    print(f"생성된 텍스트: {tokenizer.decode(test_output[0], skip_special_tokens=True)}")
+    print("✅ 테스트 생성 완료\n")
+    
     # GRPO 트레이너
     trainer = GRPOTrainer(
-        model=MODEL_ID,
+        model=model,  # 모델 객체 직접 전달
         args=grpo_config,
         train_dataset=dataset,
         reward_funcs=reward_func,  # 단일 리워드 함수도 reward_funcs 파라미터 사용
@@ -1053,7 +1689,19 @@ def train_dapo():
             return
         
         # 모델과 토크나이저 로드
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+        if "MobileLLM" in MODEL_ID:
+            # MobileLLM은 LlamaTokenizer 직접 사용
+            tokenizer = LlamaTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+        else:
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+            except Exception as e:
+                if "custom_code" in str(e) or "trust_remote_code" in str(e):
+                    print("⚠️ 이 모델은 custom code가 필요합니다. trust_remote_code=True로 재시도...")
+                    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN, trust_remote_code=True)
+                else:
+                    raise e
+        
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
@@ -1079,8 +1727,6 @@ def train_with_trl():
     # METHOD에 따라 적절한 학습 함수 호출
     if METHOD.upper() == "SFT":
         train_sft()
-    elif METHOD.upper() == "PPO":
-        train_ppo()
     elif METHOD.upper() == "DPO":
         train_dpo()
     elif METHOD.upper() == "ORPO":
